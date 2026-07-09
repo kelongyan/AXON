@@ -1,0 +1,135 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: agentflow
+      POSTGRES_USER: agentflow
+      POSTGRES_PASSWORD: agentflow
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agentflow -d agentflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:8-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: quay.io/minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: agentflow
+      MINIO_ROOT_PASSWORD: agentflowsecret
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio-init:
+    image: quay.io/minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 agentflow agentflowsecret &&
+      mc mb --ignore-existing local/agentflow-artifacts
+      "
+
+  api:
+    build:
+      context: ./apps/api
+    environment:
+      AGENTFLOW_ENVIRONMENT: development
+      AGENTFLOW_CHECK_DEPENDENCIES: "true"
+      AGENTFLOW_CORS_ALLOWED_ORIGINS: http://localhost:3000
+      AGENTFLOW_DATABASE_URL: postgresql+psycopg://agentflow:agentflow@postgres:5432/agentflow
+      AGENTFLOW_REDIS_URL: redis://redis:6379/0
+      AGENTFLOW_MINIO_ENDPOINT_URL: http://minio:9000
+      AGENTFLOW_MINIO_ACCESS_KEY: agentflow
+      AGENTFLOW_MINIO_SECRET_KEY: agentflowsecret
+      AGENTFLOW_MINIO_BUCKET: agentflow-artifacts
+      AGENTFLOW_API_AUTH_KEY: ${AGENTFLOW_API_AUTH_KEY:-}
+      AGENTFLOW_LLM_API_BASE_URL: ${AGENTFLOW_LLM_API_BASE_URL:-https://api.openai.com/v1}
+      AGENTFLOW_LLM_API_KEY: ${AGENTFLOW_LLM_API_KEY:-}
+      AGENTFLOW_LLM_MODEL: ${AGENTFLOW_LLM_MODEL:-gpt-4.1-mini}
+      AGENTFLOW_EMBEDDING_API_BASE_URL: ${AGENTFLOW_EMBEDDING_API_BASE_URL:-}
+      AGENTFLOW_EMBEDDING_API_KEY: ${AGENTFLOW_EMBEDDING_API_KEY:-}
+      AGENTFLOW_EMBEDDING_MODEL: ${AGENTFLOW_EMBEDDING_MODEL:-text-embedding-3-small}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    ports:
+      - "8000:8000"
+
+  worker:
+    build:
+      context: ./apps/api
+    command: ["python", "-m", "app.worker.main"]
+    environment:
+      AGENTFLOW_ENVIRONMENT: development
+      AGENTFLOW_CHECK_DEPENDENCIES: "true"
+      AGENTFLOW_CORS_ALLOWED_ORIGINS: http://localhost:3000
+      AGENTFLOW_DATABASE_URL: postgresql+psycopg://agentflow:agentflow@postgres:5432/agentflow
+      AGENTFLOW_REDIS_URL: redis://redis:6379/0
+      AGENTFLOW_MINIO_ENDPOINT_URL: http://minio:9000
+      AGENTFLOW_MINIO_ACCESS_KEY: agentflow
+      AGENTFLOW_MINIO_SECRET_KEY: agentflowsecret
+      AGENTFLOW_MINIO_BUCKET: agentflow-artifacts
+      AGENTFLOW_API_AUTH_KEY: ${AGENTFLOW_API_AUTH_KEY:-}
+      AGENTFLOW_LLM_API_BASE_URL: ${AGENTFLOW_LLM_API_BASE_URL:-https://api.openai.com/v1}
+      AGENTFLOW_LLM_API_KEY: ${AGENTFLOW_LLM_API_KEY:-}
+      AGENTFLOW_LLM_MODEL: ${AGENTFLOW_LLM_MODEL:-gpt-4.1-mini}
+      AGENTFLOW_EMBEDDING_API_BASE_URL: ${AGENTFLOW_EMBEDDING_API_BASE_URL:-}
+      AGENTFLOW_EMBEDDING_API_KEY: ${AGENTFLOW_EMBEDDING_API_KEY:-}
+      AGENTFLOW_EMBEDDING_MODEL: ${AGENTFLOW_EMBEDDING_MODEL:-text-embedding-3-small}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+
+  web:
+    build:
+      context: ./apps/web
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+      NEXT_PUBLIC_AGENTFLOW_API_KEY: ${AGENTFLOW_API_AUTH_KEY:-}
+      NEXT_PUBLIC_AGENTFLOW_WORKSPACE_SLUG: ${NEXT_PUBLIC_AGENTFLOW_WORKSPACE_SLUG:-}
+      NEXT_PUBLIC_AGENTFLOW_WORKSPACE_NAME: ${NEXT_PUBLIC_AGENTFLOW_WORKSPACE_NAME:-}
+      NEXT_PUBLIC_AGENTFLOW_USER_EMAIL: ${NEXT_PUBLIC_AGENTFLOW_USER_EMAIL:-}
+      NEXT_PUBLIC_AGENTFLOW_USER_NAME: ${NEXT_PUBLIC_AGENTFLOW_USER_NAME:-}
+    depends_on:
+      - api
+    ports:
+      - "3000:3000"
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
