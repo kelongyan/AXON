@@ -82,6 +82,8 @@ class ToolCallResponse(BaseModel):
     workspace_id: UUID
     agent_id: UUID | None
     tool_id: UUID
+    run_id: UUID | None
+    run_step_id: UUID | None
     tool_name: str
     status: str
     risk_level: str

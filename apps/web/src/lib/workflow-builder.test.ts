@@ -4,7 +4,9 @@ import {
   buildApprovalBuilderNode,
   buildDefaultBuilderGraph,
   buildRetrievalBuilderNode,
+  buildToolBuilderNode,
   builderGraphToWorkflowGraph,
+  selectDefaultToolNodeReferences,
   mapRunStepsToNodeStatus,
 } from "./workflow-builder";
 
@@ -39,6 +41,49 @@ describe("workflow builder helpers", () => {
       topic: "$.run.input.topic",
       audience: "$.run.input.audience",
     });
+  });
+
+  it("adds an executable tool node for the builder palette", () => {
+    const node = buildToolBuilderNode({
+      id: "node_tool",
+      agentId: "agent-1",
+      toolId: "tool-1",
+      x: 440,
+      y: 140,
+    });
+
+    expect(node.data.nodeType).toBe("tool");
+    expect(node.data.config).toMatchObject({
+      agent_id: "agent-1",
+      tool_id: "tool-1",
+    });
+    expect(node.data.input_mapping).toEqual({
+      title: "$.run.input.title",
+      sections: [{ heading: "Summary", content: "$.run.input.summary" }],
+    });
+
+    const workflowGraph = builderGraphToWorkflowGraph([node], []);
+    expect(workflowGraph.nodes[0]).toMatchObject({
+      id: "node_tool",
+      type: "tool",
+      name: "Tool",
+      config: { agent_id: "agent-1", tool_id: "tool-1" },
+    });
+  });
+
+  it("selects the default Agent and active Tool for a tool node", () => {
+    const selection = selectDefaultToolNodeReferences(
+      [
+        { id: "agent-1", current_version_id: null },
+        { id: "agent-2", current_version_id: "agent-version-2" },
+      ],
+      [
+        { id: "tool-disabled", status: "disabled" },
+        { id: "tool-active", status: "active" },
+      ],
+    );
+
+    expect(selection).toEqual({ agentId: "agent-2", toolId: "tool-active" });
   });
 
   it("converts builder nodes and edges into workflow graph JSON", () => {

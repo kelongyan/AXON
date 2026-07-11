@@ -36,3 +36,23 @@ def test_safe_summary_redacts_model_api_key():
     assert summary["llm_api_key"] == "[REDACTED]"
     assert summary["embedding_api_key"] == "[REDACTED]"
     assert summary["model_execution_mode"] == "api"
+
+
+def test_worker_settings_are_configurable_and_visible_in_safe_summary():
+    settings = Settings(
+        worker_id="worker-east-1",
+        worker_poll_interval_seconds=5,
+        worker_lease_seconds=90,
+        worker_max_runs_per_cycle=3,
+    )
+
+    summary = settings.safe_summary()
+
+    assert settings.worker_id == "worker-east-1"
+    assert settings.worker_poll_interval_seconds == 5
+    assert settings.worker_lease_seconds == 90
+    assert settings.worker_max_runs_per_cycle == 3
+    assert summary["worker_id"] == "worker-east-1"
+    assert summary["worker_poll_interval_seconds"] == 5
+    assert summary["worker_lease_seconds"] == 90
+    assert summary["worker_max_runs_per_cycle"] == 3

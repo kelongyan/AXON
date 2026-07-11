@@ -4,6 +4,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.schemas.tools import ToolCallResponse
+
 
 class TrimmedTextModel(BaseModel):
     @field_validator("*", mode="before")
@@ -167,6 +169,7 @@ class RunResponse(BaseModel):
     updated_at: datetime
     steps: list[RunStepResponse] = Field(default_factory=list)
     llm_calls: list[RunLLMCallResponse] = Field(default_factory=list)
+    tool_calls: list[ToolCallResponse] = Field(default_factory=list)
     trace_events: list[TraceEventResponse] = Field(default_factory=list)
     approvals: list[ApprovalResponse] = Field(default_factory=list)
 

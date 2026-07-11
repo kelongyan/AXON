@@ -12,6 +12,7 @@ import {
   fetchRuns,
   formatRunCostSummary,
   rejectApproval,
+  shouldPollRunStatus,
 } from "@/lib/workflows";
 
 export function RunsConsole() {
@@ -32,6 +33,10 @@ export function RunsConsole() {
     [detail],
   );
   const selectedRunApprovals = detail?.approvals.filter((approval) => approval.status === "pending") ?? [];
+  const hasPollingRun = useMemo(
+    () => runs.some((run) => shouldPollRunStatus(run.status)) || (detail ? shouldPollRunStatus(detail.status) : false),
+    [detail, runs],
+  );
 
   useEffect(() => {
     void loadRuns();
@@ -45,6 +50,16 @@ export function RunsConsole() {
     }
   }, [selectedRunId]);
 
+  useEffect(() => {
+    if (!hasPollingRun) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      void refreshRunSnapshot();
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [hasPollingRun, selectedRunId]);
+
   async function loadRuns() {
     await runAction(async () => {
       const [nextRuns, approvals] = await Promise.all([fetchRuns(), fetchApprovals("pending")]);
@@ -57,6 +72,23 @@ export function RunsConsole() {
   async function loadRunDetail(runId: string) {
     try {
       setDetail(await fetchRun(runId));
+    } catch (error) {
+      setMessage(errorMessage(error));
+    }
+  }
+
+  async function refreshRunSnapshot() {
+    try {
+      const [nextRuns, approvals, nextDetail] = await Promise.all([
+        fetchRuns(),
+        fetchApprovals("pending"),
+        selectedRunId ? fetchRun(selectedRunId) : Promise.resolve(null),
+      ]);
+      setRuns(nextRuns);
+      setPendingApprovals(approvals);
+      if (nextDetail) {
+        setDetail(nextDetail);
+      }
     } catch (error) {
       setMessage(errorMessage(error));
     }
@@ -110,7 +142,7 @@ export function RunsConsole() {
         <div className="mt-2 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
           <div>
             <h1 className="text-2xl font-semibold text-zinc-950">Runs</h1>
-            <p className="mt-1 text-sm text-zinc-500">Inspect workflow execution, steps, model calls, and trace events.</p>
+            <p className="mt-1 text-sm text-zinc-500">Inspect workflow execution, steps, model/tool calls, and trace events.</p>
           </div>
           <div className="flex flex-wrap gap-2 text-xs">
             <StatusPill label="Runs" value={String(runs.length)} tone="neutral" />
@@ -178,9 +210,10 @@ export function RunsConsole() {
             </div>
 
             {detail ? (
-              <div className="mt-5 grid gap-4 lg:grid-cols-3">
+              <div className="mt-5 grid gap-4 lg:grid-cols-4">
                 <Metric label="Status" value={detail.status} />
                 <Metric label="Steps" value={String(detail.steps.length)} />
+                <Metric label="Tool Calls" value={String(detail.tool_calls.length)} />
                 <Metric label="Tokens" value={String(runCost.totalTokens)} />
               </div>
             ) : null}
@@ -265,6 +298,25 @@ export function RunsConsole() {
                 ))
               ) : (
                 <div className="text-sm text-zinc-500">No LLM calls yet</div>
+              )}
+            </Panel>
+
+            <Panel title="Tool Calls">
+              {detail?.tool_calls.length ? (
+                detail.tool_calls.map((call) => (
+                  <div className="rounded-md border border-zinc-200 px-3 py-2 text-sm" key={call.id}>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="font-medium text-zinc-800">{call.tool_name}</span>
+                      <span className={`text-xs ${statusClass(call.status)}`}>{call.status}</span>
+                    </div>
+                    <div className="mt-1 text-xs text-zinc-500">
+                      {call.risk_level} · {call.latency_ms} ms
+                    </div>
+                    {call.error_message ? <div className="mt-1 text-xs text-rose-700">{call.error_message}</div> : null}
+                  </div>
+                ))
+              ) : (
+                <div className="text-sm text-zinc-500">No tool calls yet</div>
               )}
             </Panel>
           </section>

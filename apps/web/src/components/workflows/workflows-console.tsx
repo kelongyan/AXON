@@ -20,6 +20,7 @@ import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useSta
 
 import { type Agent, fetchAgents } from "@/lib/agents";
 import { type KnowledgeBase, fetchKnowledgeBases } from "@/lib/knowledge-bases";
+import { type Tool, fetchTools } from "@/lib/tools";
 import {
   type BuilderNode,
   type BuilderNodeData,
@@ -30,8 +31,10 @@ import {
   buildEndBuilderNode,
   buildRetrievalBuilderNode,
   buildStartBuilderNode,
+  buildToolBuilderNode,
   builderGraphToWorkflowGraph,
   mapRunStepsToNodeStatus,
+  selectDefaultToolNodeReferences,
   workflowGraphToBuilderGraph,
 } from "@/lib/workflow-builder";
 import {
@@ -70,6 +73,7 @@ type FlowEdge = Edge;
 export function WorkflowsConsole() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
+  const [tools, setTools] = useState<Tool[]>([]);
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [selectedWorkflowId, setSelectedWorkflowId] = useState<string | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -122,14 +126,16 @@ export function WorkflowsConsole() {
 
   async function loadInitialData() {
     await runAction(async () => {
-      const [nextAgents, nextWorkflows, nextKnowledgeBases] = await Promise.all([
+      const [nextAgents, nextWorkflows, nextKnowledgeBases, nextTools] = await Promise.all([
         fetchAgents(),
         fetchWorkflows(),
         fetchKnowledgeBases(),
+        fetchTools(),
       ]);
       setAgents(nextAgents);
       setWorkflows(nextWorkflows);
       setKnowledgeBases(nextKnowledgeBases);
+      setTools(nextTools);
       setSelectedWorkflowId((current) => current ?? nextWorkflows[0]?.id ?? null);
       if (nextWorkflows.length === 0) {
         loadTemplateGraph(nextAgents[0]?.current_version_id ?? null);
@@ -156,9 +162,9 @@ export function WorkflowsConsole() {
       setDetail(nextDetail);
       setFormValues({ name: nextDetail.name, description: nextDetail.description });
       if (nextDetail.current_version?.graph) {
-      const builderGraph = workflowGraphToBuilderGraph(nextDetail.current_version.graph);
-      setNodes(builderGraph.nodes as FlowNode[]);
-      setEdges(builderGraph.edges as FlowEdge[]);
+        const builderGraph = workflowGraphToBuilderGraph(nextDetail.current_version.graph);
+        setNodes(builderGraph.nodes as FlowNode[]);
+        setEdges(builderGraph.edges as FlowEdge[]);
         setSelectedNodeId(builderGraph.nodes[0]?.id ?? null);
       }
     } catch (error) {
@@ -178,7 +184,7 @@ export function WorkflowsConsole() {
     setMessage("Loaded visual Start -> Agent -> End template");
   }
 
-  function addNode(kind: "agent" | "retrieval" | "approval" | "end") {
+  function addNode(kind: "agent" | "retrieval" | "tool" | "approval" | "end") {
     const offset = nodes.length * 45;
     if (kind === "agent") {
       const agentVersionId = selectedAgent?.current_version_id;
@@ -202,6 +208,23 @@ export function WorkflowsConsole() {
         knowledgeBaseIds: knowledgeBases[0]?.id ? [knowledgeBases[0].id] : [],
         x: 320 + offset,
         y: 40,
+      });
+      setNodes((current) => [...current, node as FlowNode]);
+      setSelectedNodeId(node.id);
+      return;
+    }
+    if (kind === "tool") {
+      const selection = selectDefaultToolNodeReferences(agents, tools);
+      if (!selection.agentId || !selection.toolId) {
+        setMessage("Create an Agent and seed an active Tool before adding a Tool node");
+        return;
+      }
+      const node = buildToolBuilderNode({
+        id: `node_tool_${Date.now()}`,
+        agentId: selection.agentId,
+        toolId: selection.toolId,
+        x: 480 + offset,
+        y: 260,
       });
       setNodes((current) => [...current, node as FlowNode]);
       setSelectedNodeId(node.id);
@@ -418,6 +441,9 @@ export function WorkflowsConsole() {
               <button className="control-button" disabled={busy} onClick={() => addNode("retrieval")} type="button">
                 Retrieval
               </button>
+              <button className="control-button" disabled={busy} onClick={() => addNode("tool")} type="button">
+                Tool
+              </button>
               <button className="control-button" disabled={busy} onClick={() => addNode("approval")} type="button">
                 Approval
               </button>
@@ -425,7 +451,7 @@ export function WorkflowsConsole() {
                 End
               </button>
             </div>
-            <p className="mt-3 text-xs text-zinc-500">Tool and Condition nodes remain planned for a later runtime phase.</p>
+            <p className="mt-3 text-xs text-zinc-500">Tool nodes execute sequentially; Condition nodes remain planned for a later runtime phase.</p>
           </div>
         </div>
 
@@ -535,6 +561,52 @@ export function WorkflowsConsole() {
                     </Field>
                   </>
                 ) : null}
+                {selectedNode.data.nodeType === "tool" ? (
+                  <>
+                    <Field label="Agent">
+                      <select
+                        className="field-input"
+                        onChange={(event) => updateSelectedNodeConfig({ agent_id: event.target.value })}
+                        value={String(selectedNode.data.config.agent_id ?? "")}
+                      >
+                        <option value="">Select Agent</option>
+                        {agents.map((agent) => (
+                          <option key={agent.id} value={agent.id}>
+                            {agent.name}
+                          </option>
+                        ))}
+                      </select>
+                    </Field>
+                    <Field label="Tool">
+                      <select
+                        className="field-input"
+                        onChange={(event) => updateSelectedNodeConfig({ tool_id: event.target.value })}
+                        value={String(selectedNode.data.config.tool_id ?? "")}
+                      >
+                        <option value="">Select Tool</option>
+                        {tools.map((tool) => (
+                          <option disabled={tool.status !== "active"} key={tool.id} value={tool.id}>
+                            {tool.display_name || tool.name} · {tool.risk_level}
+                          </option>
+                        ))}
+                      </select>
+                    </Field>
+                    <Field label="Approval Title">
+                      <input
+                        className="field-input"
+                        onChange={(event) => updateSelectedNodeConfig({ approval_title: event.target.value })}
+                        value={String(selectedNode.data.config.approval_title ?? "")}
+                      />
+                    </Field>
+                    <Field label="Approval Instructions">
+                      <textarea
+                        className="field-input min-h-20 resize-y"
+                        onChange={(event) => updateSelectedNodeConfig({ approval_instructions: event.target.value })}
+                        value={String(selectedNode.data.config.approval_instructions ?? "")}
+                      />
+                    </Field>
+                  </>
+                ) : null}
                 {selectedNode.data.nodeType === "approval" ? (
                   <>
                     <Field label="Approval Title">
@@ -606,6 +678,9 @@ export function WorkflowsConsole() {
                 <div className="flex items-center justify-between gap-3">
                   <div className="text-xs font-semibold uppercase tracking-normal text-emerald-700">Last Run</div>
                   <span className="text-xs font-medium text-emerald-700">{lastRun.status}</span>
+                </div>
+                <div className="mt-1 text-xs text-emerald-700">
+                  {lastRun.steps.length} steps · {lastRun.tool_calls.length} tool calls
                 </div>
                 <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap text-sm text-emerald-950">
                   {JSON.stringify(lastRun.output ?? lastRun.input, null, 2)}

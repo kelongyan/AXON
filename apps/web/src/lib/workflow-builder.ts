@@ -37,6 +37,21 @@ export type RunStepLike = {
   status: string;
 };
 
+export type ToolNodeReferenceSelection = {
+  agentId: string | null;
+  toolId: string | null;
+};
+
+export function selectDefaultToolNodeReferences(
+  agents: Array<{ id: string; current_version_id?: string | null }>,
+  tools: Array<{ id: string; status?: string }>,
+): ToolNodeReferenceSelection {
+  return {
+    agentId: agents.find((agent) => agent.current_version_id)?.id ?? agents[0]?.id ?? null,
+    toolId: tools.find((tool) => tool.status === "active")?.id ?? tools[0]?.id ?? null,
+  };
+}
+
 export function buildDefaultBuilderGraph(agentVersionId: string): BuilderGraph {
   return {
     nodes: [
@@ -128,6 +143,38 @@ export function buildRetrievalBuilderNode({
         top_k: 5,
       },
       input_mapping: { query: "$.run.input.topic" },
+    },
+  };
+}
+
+export function buildToolBuilderNode({
+  agentId,
+  id,
+  toolId,
+  x,
+  y,
+}: {
+  agentId: string;
+  id: string;
+  toolId: string;
+  x: number;
+  y: number;
+}): BuilderNode {
+  return {
+    id,
+    type: "workflowNode",
+    position: { x, y },
+    data: {
+      label: "Tool",
+      nodeType: "tool",
+      config: {
+        agent_id: agentId,
+        tool_id: toolId,
+      },
+      input_mapping: {
+        title: "$.run.input.title",
+        sections: [{ heading: "Summary", content: "$.run.input.summary" }],
+      },
     },
   };
 }

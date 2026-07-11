@@ -5,8 +5,9 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.core.config import Settings
-from app.db.models import Base, RunStep
+from app.db.models import Base, Run, RunStep, Tool, ToolCall
 from app.main import create_app
+from app.services import workflows
 from app.services.llm import LLMCompletion, LLMProviderError
 
 
@@ -191,6 +192,168 @@ def test_run_detail_orders_steps_by_execution_start_time_when_created_at_is_not_
     assert [step["node_id"] for step in detail["steps"]] == expected_order
 
 
+def test_worker_claim_marks_oldest_queued_run_and_prevents_duplicate_claims():
+    client = create_test_client()
+    researcher = create_agent(client, "Claim Worker Agent")
+    workflow = client.post("/workflows", json={"name": "Claim Worker Flow"}).json()
+    client.post(
+        f"/workflows/{workflow['id']}/versions",
+        json={"graph": simple_graph(researcher["current_version_id"])},
+    )
+    run = client.post(
+        f"/workflows/{workflow['id']}/runs",
+        json={"input": {"topic": "AgentFlow", "audience": "CTO"}},
+    ).json()
+
+    with client.app.state.session_factory() as session:
+        claimed = workflows.claim_next_queued_run(
+            session,
+            workspace_id=None,
+            worker_id="worker-a",
+            lease_seconds=120,
+        )
+        duplicate = workflows.claim_next_queued_run(
+            session,
+            workspace_id=None,
+            worker_id="worker-b",
+            lease_seconds=120,
+        )
+        stored_run = session.get(Run, UUID(run["id"]))
+
+    assert claimed is not None
+    assert duplicate is None
+    assert stored_run is not None
+    assert stored_run.status == "running"
+    assert stored_run.worker_id == "worker-a"
+    assert stored_run.claim_token
+    assert stored_run.lease_expires_at is not None
+    assert stored_run.started_at is not None
+
+
+def test_worker_claim_reclaims_expired_running_lease():
+    client = create_test_client()
+    researcher = create_agent(client, "Expired Claim Agent")
+    workflow = client.post("/workflows", json={"name": "Expired Claim Flow"}).json()
+    client.post(
+        f"/workflows/{workflow['id']}/versions",
+        json={"graph": simple_graph(researcher["current_version_id"])},
+    )
+    run = client.post(
+        f"/workflows/{workflow['id']}/runs",
+        json={"input": {"topic": "AgentFlow", "audience": "CTO"}},
+    ).json()
+
+    with client.app.state.session_factory() as session:
+        first_claim = workflows.claim_next_queued_run(
+            session,
+            workspace_id=None,
+            worker_id="worker-a",
+            lease_seconds=120,
+        )
+        assert first_claim is not None
+        first_claim_token = first_claim.claim_token
+        duplicate = workflows.claim_next_queued_run(
+            session,
+            workspace_id=None,
+            worker_id="worker-b",
+            lease_seconds=120,
+        )
+        stored_run = session.get(Run, UUID(run["id"]))
+        assert stored_run is not None
+        stored_run.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        session.flush()
+        reclaimed = workflows.claim_next_queued_run(
+            session,
+            workspace_id=None,
+            worker_id="worker-b",
+            lease_seconds=120,
+        )
+
+    assert duplicate is None
+    assert reclaimed is not None
+    assert reclaimed.id == UUID(run["id"])
+    assert reclaimed.worker_id == "worker-b"
+    assert reclaimed.claim_token != first_claim_token
+    assert reclaimed.status == "running"
+
+
+def test_worker_execute_next_queued_run_uses_claim_and_clears_it_after_terminal_state():
+    fake_llm = SequencedLLMClient(outputs=["worker output"])
+    client = create_test_client(fake_llm)
+    researcher = create_agent(client, "Claim Execute Agent")
+    workflow = client.post("/workflows", json={"name": "Claim Execute Flow"}).json()
+    client.post(
+        f"/workflows/{workflow['id']}/versions",
+        json={"graph": simple_graph(researcher["current_version_id"])},
+    )
+    run = client.post(
+        f"/workflows/{workflow['id']}/runs",
+        json={"input": {"topic": "AgentFlow", "audience": "CTO"}},
+    ).json()
+
+    with client.app.state.session_factory() as session:
+        executed = workflows.execute_next_queued_run(
+            session,
+            workspace_id=None,
+            worker_id="worker-a",
+            llm_client=fake_llm,
+        )
+        stored_run = session.get(Run, UUID(run["id"]))
+
+    assert executed is not None
+    assert executed.status == "succeeded"
+    assert stored_run is not None
+    assert stored_run.status == "succeeded"
+    assert stored_run.worker_id is None
+    assert stored_run.claim_token is None
+    assert stored_run.lease_expires_at is None
+    started_event = next(event for event in executed.trace_events if event.event_type == "run.started")
+    assert started_event.actor_id == "worker-a"
+
+
+def test_worker_preserves_current_node_checkpoint_when_waiting_for_tool_approval():
+    client = create_test_client()
+    agent = create_agent(client, "Checkpoint Tool Agent")
+    client.post("/tools/seed-built-ins")
+    markdown_tool = tool_by_name(client, "markdown_report_generate")
+    with client.app.state.session_factory() as session:
+        stored_tool = session.get(Tool, UUID(markdown_tool["id"]))
+        assert stored_tool is not None
+        stored_tool.risk_level = "external_effect"
+        stored_tool.requires_approval = True
+        session.commit()
+    grant = client.post(f"/agents/{agent['id']}/tools/{markdown_tool['id']}/grant")
+    assert grant.status_code == 201
+    workflow = client.post("/workflows", json={"name": "Checkpoint Tool Flow"}).json()
+    publish = client.post(
+        f"/workflows/{workflow['id']}/versions",
+        json={"graph": tool_graph(agent["id"], markdown_tool["id"])},
+    )
+    assert publish.status_code == 201
+    run = client.post(
+        f"/workflows/{workflow['id']}/runs",
+        json={"input": {"title": "Checkpoint Report", "summary": "Needs approval."}},
+    ).json()
+
+    with client.app.state.session_factory() as session:
+        paused = workflows.execute_next_queued_run(
+            session,
+            workspace_id=None,
+            worker_id="worker-a",
+            llm_client=object(),
+        )
+        stored_run = session.get(Run, UUID(run["id"]))
+
+    assert paused is not None
+    assert paused.status == "waiting_approval"
+    assert stored_run is not None
+    assert stored_run.status == "waiting_approval"
+    assert stored_run.worker_id is None
+    assert stored_run.claim_token is None
+    assert stored_run.lease_expires_at is None
+    assert stored_run.current_node_id == "node_tool"
+
+
 def test_run_created_trace_redacts_sensitive_input_fields():
     client = create_test_client()
     researcher = create_agent(client, "Researcher Agent", "Return research notes.")
@@ -312,25 +475,25 @@ def test_publish_rejects_visual_graph_with_unreachable_node():
     assert "reachable" in response.json()["detail"]
 
 
-def test_publish_rejects_planned_visual_nodes_that_are_not_executable_yet():
+def test_publish_rejects_condition_node_that_is_not_executable_yet():
     client = create_test_client()
-    workflow = client.post("/workflows", json={"name": "Tool Node Flow"}).json()
+    workflow = client.post("/workflows", json={"name": "Condition Node Flow"}).json()
     graph = {
         "schema_version": "1.0",
         "nodes": [
             {"id": "node_start", "type": "start", "name": "Start", "position": {"x": 0, "y": 0}, "config": {}},
             {
-                "id": "node_tool",
-                "type": "tool",
-                "name": "Generate Artifact",
+                "id": "node_condition",
+                "type": "condition",
+                "name": "Branch",
                 "position": {"x": 280, "y": 0},
-                "config": {"tool_id": "00000000-0000-0000-0000-000000000001"},
+                "config": {"conditions": []},
             },
             {"id": "node_end", "type": "end", "name": "End", "position": {"x": 560, "y": 0}, "config": {}},
         ],
         "edges": [
-            {"id": "edge_start_tool", "source": "node_start", "target": "node_tool", "type": "default"},
-            {"id": "edge_tool_end", "source": "node_tool", "target": "node_end", "type": "default"},
+            {"id": "edge_start_condition", "source": "node_start", "target": "node_condition", "type": "default"},
+            {"id": "edge_condition_end", "source": "node_condition", "target": "node_end", "type": "default"},
         ],
     }
 
@@ -338,6 +501,238 @@ def test_publish_rejects_planned_visual_nodes_that_are_not_executable_yet():
 
     assert response.status_code == 422
     assert "not executable in Phase 6 MVP" in response.json()["detail"]
+
+
+def test_low_risk_tool_node_executes_and_records_tool_call():
+    client = create_test_client()
+    agent = create_agent(client, "Tool Workflow Agent")
+    client.post("/tools/seed-built-ins")
+    markdown_tool = tool_by_name(client, "markdown_report_generate")
+    grant = client.post(f"/agents/{agent['id']}/tools/{markdown_tool['id']}/grant")
+    assert grant.status_code == 201
+    workflow = client.post("/workflows", json={"name": "Tool Execution Flow"}).json()
+    publish = client.post(
+        f"/workflows/{workflow['id']}/versions",
+        json={"graph": tool_graph(agent["id"], markdown_tool["id"])},
+    )
+    assert publish.status_code == 201
+
+    run = client.post(
+        f"/workflows/{workflow['id']}/runs",
+        json={"input": {"title": "AXON Tool Report", "summary": "Tool node executed."}},
+    ).json()
+    response = client.post(f"/runs/{run['id']}/execute")
+
+    assert response.status_code == 200
+    body = response.json()
+    expected_markdown = "# AXON Tool Report\n\n## Summary\n\nTool node executed."
+    assert body["status"] == "succeeded"
+    assert body["output"] == {"markdown": expected_markdown}
+    assert [step["node_id"] for step in body["steps"]] == ["node_start", "node_tool", "node_end"]
+    assert body["steps"][1]["status"] == "succeeded"
+    assert body["steps"][1]["output"] == {"markdown": expected_markdown}
+    assert body["tool_calls"][0]["status"] == "succeeded"
+    assert body["tool_calls"][0]["tool_name"] == "markdown_report_generate"
+    assert body["tool_calls"][0]["run_id"] == body["id"]
+    assert body["tool_calls"][0]["run_step_id"] == body["steps"][1]["id"]
+    assert "tool.succeeded" in [event["event_type"] for event in body["trace_events"]]
+
+    with client.app.state.session_factory() as session:
+        stored_call = session.get(ToolCall, UUID(body["tool_calls"][0]["id"]))
+        assert stored_call is not None
+        assert stored_call.run_id == UUID(body["id"])
+        assert stored_call.run_step_id == UUID(body["steps"][1]["id"])
+
+
+def test_high_risk_tool_node_waits_for_approval_then_executes_once():
+    client = create_test_client()
+    agent = create_agent(client, "Approval Tool Agent")
+    client.post("/tools/seed-built-ins")
+    markdown_tool = tool_by_name(client, "markdown_report_generate")
+    with client.app.state.session_factory() as session:
+        stored_tool = session.get(Tool, UUID(markdown_tool["id"]))
+        assert stored_tool is not None
+        stored_tool.risk_level = "external_effect"
+        stored_tool.requires_approval = True
+        session.commit()
+    grant = client.post(f"/agents/{agent['id']}/tools/{markdown_tool['id']}/grant")
+    assert grant.status_code == 201
+    workflow = client.post("/workflows", json={"name": "Approval Tool Flow"}).json()
+    publish = client.post(
+        f"/workflows/{workflow['id']}/versions",
+        json={"graph": tool_graph(agent["id"], markdown_tool["id"])},
+    )
+    assert publish.status_code == 201
+    run = client.post(
+        f"/workflows/{workflow['id']}/runs",
+        json={"input": {"title": "Approval Tool Report", "summary": "Approved execution."}},
+    ).json()
+
+    paused_response = client.post(f"/runs/{run['id']}/execute")
+
+    assert paused_response.status_code == 200
+    paused = paused_response.json()
+    assert paused["status"] == "waiting_approval"
+    assert [step["node_id"] for step in paused["steps"]] == ["node_start", "node_tool"]
+    assert paused["steps"][1]["status"] == "waiting_approval"
+    assert paused["approvals"][0]["status"] == "pending"
+    assert paused["approvals"][0]["node_id"] == "node_tool"
+    assert paused["approvals"][0]["requested_payload"]["title"] == "Approval Tool Report"
+    assert paused["tool_calls"] == []
+    requested_event = next(event for event in paused["trace_events"] if event["event_type"] == "approval.requested")
+    assert requested_event["payload"]["node_id"] == "node_tool"
+
+    response = client.post(
+        f"/approvals/{paused['approvals'][0]['id']}/approve",
+        json={"comment": "Approved for report generation."},
+    )
+
+    assert response.status_code == 200
+    approved = response.json()
+    assert approved["status"] == "queued"
+    assert approved["approvals"][0]["status"] == "approved"
+    assert approved["tool_calls"] == []
+
+    with client.app.state.session_factory() as session:
+        resumed = workflows.execute_next_queued_run(
+            session,
+            workspace_id=None,
+            worker_id="worker-a",
+            llm_client=object(),
+        )
+        session.commit()
+
+    assert resumed is not None
+    body = client.get(f"/runs/{run['id']}").json()
+    expected_markdown = "# Approval Tool Report\n\n## Summary\n\nApproved execution."
+    assert body["status"] == "succeeded"
+    assert body["output"] == {"markdown": expected_markdown}
+    assert [step["node_id"] for step in body["steps"]] == ["node_start", "node_tool", "node_end"]
+    assert body["steps"][1]["status"] == "succeeded"
+    assert body["steps"][1]["output"] == {"markdown": expected_markdown}
+    assert body["approvals"][0]["status"] == "approved"
+    assert body["tool_calls"][0]["status"] == "succeeded"
+    assert body["tool_calls"][0]["run_step_id"] == body["steps"][1]["id"]
+    assert [call["status"] for call in body["tool_calls"]] == ["succeeded"]
+    event_types = [event["event_type"] for event in body["trace_events"]]
+    assert "approval.approved" in event_types
+    assert "tool.succeeded" in event_types
+
+
+def test_approved_tool_node_is_requeued_and_worker_resumes_once():
+    client = create_test_client()
+    agent = create_agent(client, "Queued Approval Tool Agent")
+    client.post("/tools/seed-built-ins")
+    markdown_tool = tool_by_name(client, "markdown_report_generate")
+    with client.app.state.session_factory() as session:
+        stored_tool = session.get(Tool, UUID(markdown_tool["id"]))
+        assert stored_tool is not None
+        stored_tool.risk_level = "external_effect"
+        stored_tool.requires_approval = True
+        session.commit()
+    grant = client.post(f"/agents/{agent['id']}/tools/{markdown_tool['id']}/grant")
+    assert grant.status_code == 201
+    workflow = client.post("/workflows", json={"name": "Queued Approval Tool Flow"}).json()
+    publish = client.post(
+        f"/workflows/{workflow['id']}/versions",
+        json={"graph": tool_graph(agent["id"], markdown_tool["id"])},
+    )
+    assert publish.status_code == 201
+    run = client.post(
+        f"/workflows/{workflow['id']}/runs",
+        json={"input": {"title": "Queued Tool Report", "summary": "Worker resumed execution."}},
+    ).json()
+    paused = client.post(f"/runs/{run['id']}/execute").json()
+
+    approved_response = client.post(
+        f"/approvals/{paused['approvals'][0]['id']}/approve",
+        json={"comment": "Worker may continue."},
+    )
+
+    assert approved_response.status_code == 200
+    approved = approved_response.json()
+    assert approved["status"] == "queued"
+    assert approved["approvals"][0]["status"] == "approved"
+    assert approved["tool_calls"] == []
+    assert approved["steps"][1]["status"] == "waiting_approval"
+
+    with client.app.state.session_factory() as session:
+        resumed = workflows.execute_next_queued_run(
+            session,
+            workspace_id=None,
+            worker_id="worker-a",
+            llm_client=object(),
+        )
+        session.commit()
+
+    assert resumed is not None
+    expected_markdown = "# Queued Tool Report\n\n## Summary\n\nWorker resumed execution."
+    assert resumed.status == "succeeded"
+    assert resumed.output == {"markdown": expected_markdown}
+    assert [call.status for call in resumed.tool_calls] == ["succeeded"]
+    assert resumed.tool_calls[0].run_step_id == resumed.steps[1].id
+    event_types = [event.event_type for event in resumed.trace_events]
+    assert event_types.count("approval.approved") == 1
+    approval_queued_events = [
+        event
+        for event in resumed.trace_events
+        if event.event_type == "run.queued" and event.payload.get("approval_id") == approved["approvals"][0]["id"]
+    ]
+    assert len(approval_queued_events) == 1
+
+
+def test_approved_tool_node_stays_succeeded_when_downstream_step_fails():
+    fake_llm = SequencedLLMClient(outputs=["__FAIL__"])
+    client = create_test_client(fake_llm)
+    agent = create_agent(client, "Tool Then Failing Agent")
+    client.post("/tools/seed-built-ins")
+    markdown_tool = tool_by_name(client, "markdown_report_generate")
+    with client.app.state.session_factory() as session:
+        stored_tool = session.get(Tool, UUID(markdown_tool["id"]))
+        assert stored_tool is not None
+        stored_tool.risk_level = "external_effect"
+        stored_tool.requires_approval = True
+        session.commit()
+    grant = client.post(f"/agents/{agent['id']}/tools/{markdown_tool['id']}/grant")
+    assert grant.status_code == 201
+    workflow = client.post("/workflows", json={"name": "Approved Tool Downstream Failure Flow"}).json()
+    publish = client.post(
+        f"/workflows/{workflow['id']}/versions",
+        json={"graph": tool_then_agent_graph(agent["id"], markdown_tool["id"], agent["current_version_id"])},
+    )
+    assert publish.status_code == 201
+    run = client.post(
+        f"/workflows/{workflow['id']}/runs",
+        json={"input": {"title": "Approval Tool Report", "summary": "Approved execution."}},
+    ).json()
+    paused = client.post(f"/runs/{run['id']}/execute").json()
+
+    response = client.post(
+        f"/approvals/{paused['approvals'][0]['id']}/approve",
+        json={"comment": "Approved before downstream failure."},
+    )
+
+    assert response.status_code == 200
+    queued = response.json()
+    assert queued["status"] == "queued"
+
+    with client.app.state.session_factory() as session:
+        resumed = workflows.execute_next_queued_run(
+            session,
+            workspace_id=None,
+            worker_id="worker-a",
+            llm_client=fake_llm,
+        )
+        session.commit()
+
+    assert resumed is not None
+    body = client.get(f"/runs/{run['id']}").json()
+    steps_by_node = {step["node_id"]: step for step in body["steps"]}
+    assert body["status"] == "failed"
+    assert steps_by_node["node_tool"]["status"] == "succeeded"
+    assert steps_by_node["node_agent"]["status"] == "failed"
+    assert body["tool_calls"][0]["status"] == "succeeded"
+    assert body["approvals"][0]["status"] == "approved"
 
 
 def test_publish_accepts_phase6_approval_node():
@@ -409,14 +804,30 @@ def test_approving_pending_approval_resumes_run_to_success():
     )
 
     assert response.status_code == 200
-    body = response.json()
+    queued = response.json()
+    assert queued["status"] == "queued"
+    assert queued["approvals"][0]["status"] == "approved"
+    assert queued["approvals"][0]["decision_comment"] == "Looks safe to continue."
+    assert "approval.approved" in [event["event_type"] for event in queued["trace_events"]]
+    assert "run.queued" in [event["event_type"] for event in queued["trace_events"]]
+    assert fake_llm.calls == []
+
+    with client.app.state.session_factory() as session:
+        resumed = workflows.execute_next_queued_run(
+            session,
+            workspace_id=None,
+            worker_id="worker-a",
+            llm_client=fake_llm,
+        )
+        session.commit()
+
+    assert resumed is not None
+    body = client.get(f"/runs/{run['id']}").json()
     assert body["status"] == "succeeded"
     assert body["output"] == {"result": "approved answer"}
     assert [step["node_id"] for step in body["steps"]] == ["node_start", "node_approval", "node_agent", "node_end"]
     assert body["approvals"][0]["status"] == "approved"
     assert body["approvals"][0]["decision_comment"] == "Looks safe to continue."
-    assert "approval.approved" in [event["event_type"] for event in body["trace_events"]]
-    assert "run.resumed" in [event["event_type"] for event in body["trace_events"]]
     assert fake_llm.calls[0]["model"] == "step-3.7-flash"
 
 
@@ -442,7 +853,22 @@ def test_approval_resume_failure_marks_run_failed_and_keeps_decision():
     )
 
     assert response.status_code == 200
-    body = response.json()
+    queued = response.json()
+    assert queued["status"] == "queued"
+    assert queued["approvals"][0]["status"] == "approved"
+    assert queued["approvals"][0]["decision_comment"] == "Approved, but downstream provider fails."
+
+    with client.app.state.session_factory() as session:
+        resumed = workflows.execute_next_queued_run(
+            session,
+            workspace_id=None,
+            worker_id="worker-a",
+            llm_client=fake_llm,
+        )
+        session.commit()
+
+    assert resumed is not None
+    body = client.get(f"/runs/{run['id']}").json()
     assert body["status"] == "failed"
     assert body["error_type"] == "RunExecutionError"
     assert body["approvals"][0]["status"] == "approved"
@@ -495,6 +921,15 @@ def create_knowledge_base(client: TestClient) -> str:
     return response.json()["id"]
 
 
+def tool_by_name(client: TestClient, name: str) -> dict[str, object]:
+    response = client.get("/tools")
+    assert response.status_code == 200
+    for tool in response.json()["items"]:
+        if tool["name"] == name:
+            return tool
+    raise AssertionError(f"Tool not found: {name}")
+
+
 def simple_graph(agent_version_id: str) -> dict[str, object]:
     return {
         "schema_version": "1.0",
@@ -530,6 +965,75 @@ def simple_graph(agent_version_id: str) -> dict[str, object]:
         ],
         "edges": [
             {"id": "edge_start_agent", "source": "node_start", "target": "node_agent", "type": "default"},
+            {"id": "edge_agent_end", "source": "node_agent", "target": "node_end", "type": "default"},
+        ],
+    }
+
+
+def tool_graph(agent_id: str, tool_id: str) -> dict[str, object]:
+    return {
+        "schema_version": "1.0",
+        "nodes": [
+            {"id": "node_start", "type": "start", "name": "Start", "config": {}},
+            {
+                "id": "node_tool",
+                "type": "tool",
+                "name": "Generate Markdown",
+                "config": {"agent_id": agent_id, "tool_id": tool_id},
+                "input_mapping": {
+                    "title": "$.run.input.title",
+                    "sections": [{"heading": "Summary", "content": "$.run.input.summary"}],
+                },
+            },
+            {
+                "id": "node_end",
+                "type": "end",
+                "name": "End",
+                "config": {"output_mapping": {"markdown": "$.steps.node_tool.output.markdown"}},
+            },
+        ],
+        "edges": [
+            {"id": "edge_start_tool", "source": "node_start", "target": "node_tool", "type": "default"},
+            {"id": "edge_tool_end", "source": "node_tool", "target": "node_end", "type": "default"},
+        ],
+    }
+
+
+def tool_then_agent_graph(agent_id: str, tool_id: str, agent_version_id: str) -> dict[str, object]:
+    return {
+        "schema_version": "1.0",
+        "nodes": [
+            {"id": "node_start", "type": "start", "name": "Start", "config": {}},
+            {
+                "id": "node_tool",
+                "type": "tool",
+                "name": "Generate Markdown",
+                "config": {"agent_id": agent_id, "tool_id": tool_id},
+                "input_mapping": {
+                    "title": "$.run.input.title",
+                    "sections": [{"heading": "Summary", "content": "$.run.input.summary"}],
+                },
+            },
+            {
+                "id": "node_agent",
+                "type": "agent",
+                "name": "Summarize Tool Output",
+                "config": {
+                    "agent_version_id": agent_version_id,
+                    "instruction": "Summarize the generated markdown.",
+                },
+                "input_mapping": {"markdown": "$.steps.node_tool.output.markdown"},
+            },
+            {
+                "id": "node_end",
+                "type": "end",
+                "name": "End",
+                "config": {"output_mapping": {"summary": "$.steps.node_agent.output.content"}},
+            },
+        ],
+        "edges": [
+            {"id": "edge_start_tool", "source": "node_start", "target": "node_tool", "type": "default"},
+            {"id": "edge_tool_agent", "source": "node_tool", "target": "node_agent", "type": "default"},
             {"id": "edge_agent_end", "source": "node_agent", "target": "node_end", "type": "default"},
         ],
     }

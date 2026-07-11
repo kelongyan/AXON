@@ -22,6 +22,8 @@ export type ToolCall = {
   workspace_id: string;
   agent_id: string | null;
   tool_id: string;
+  run_id: string | null;
+  run_step_id: string | null;
   tool_name: string;
   status: string;
   risk_level: string;

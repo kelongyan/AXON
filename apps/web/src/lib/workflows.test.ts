@@ -6,6 +6,7 @@ import {
   formatRunCostSummary,
   parseRunInput,
   parseWorkflowGraph,
+  shouldPollRunStatus,
 } from "./workflows";
 
 describe("workflow helpers", () => {
@@ -58,5 +59,13 @@ describe("workflow helpers", () => {
       completionTokens: 11,
       totalLatencyMs: 300,
     });
+  });
+
+  it("identifies active worker-backed run statuses for polling", () => {
+    expect(shouldPollRunStatus("queued")).toBe(true);
+    expect(shouldPollRunStatus("running")).toBe(true);
+    expect(shouldPollRunStatus("waiting_approval")).toBe(false);
+    expect(shouldPollRunStatus("succeeded")).toBe(false);
+    expect(shouldPollRunStatus("failed")).toBe(false);
   });
 });

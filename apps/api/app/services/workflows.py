@@ -1,7 +1,7 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from time import perf_counter
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import sqlalchemy as sa
 from sqlalchemy import select
@@ -14,6 +14,8 @@ from app.db.models import (
     LLMCall,
     Run,
     RunStep,
+    Tool,
+    ToolCall,
     TraceEvent,
     Workflow,
     WorkflowVersion,
@@ -30,8 +32,8 @@ from app.schemas.workflows import (
     WorkflowVersionResponse,
 )
 from app.services.llm import LLMProviderError, sanitize_provider_error
-from app.services import knowledge_bases
-from app.services.tools import redact_mapping, validate_input_schema
+from app.services import knowledge_bases, tools as tool_services
+from app.services.tools import ToolExecutionRejected, redact_mapping, validate_input_schema
 
 
 class WorkflowNotFoundError(LookupError):
@@ -62,8 +64,9 @@ class RunWaitingForApproval(RuntimeError):
     pass
 
 
-EXECUTABLE_PHASE6_NODE_TYPES = {"start", "retrieval", "agent", "approval", "end"}
-PLANNED_VISUAL_NODE_TYPES = {"tool", "condition"}
+EXECUTABLE_PHASE6_NODE_TYPES = {"start", "retrieval", "agent", "tool", "approval", "end"}
+PLANNED_VISUAL_NODE_TYPES = {"condition"}
+TERMINAL_RUN_STATUSES = {"succeeded", "failed", "cancelled"}
 
 
 def create_workflow(
@@ -139,7 +142,7 @@ def publish_workflow_version(
         graph=payload.graph,
         node_snapshots=validation["node_snapshots"],
         referenced_agent_versions=validation["referenced_agent_versions"],
-        referenced_tool_versions=[],
+        referenced_tool_versions=validation["referenced_tool_versions"],
         status="published",
     )
     session.add(version)
@@ -259,6 +262,72 @@ def execute_run(
     )
     session.flush()
 
+    return _execute_running_run(
+        session,
+        workspace_id=workspace_id,
+        run=run,
+        version=version,
+        llm_client=llm_client,
+        embedding_client=embedding_client,
+    )
+
+
+def execute_claimed_run(
+    session: Session,
+    *,
+    workspace_id: UUID,
+    run_id: UUID,
+    claim_token: str,
+    llm_client: object,
+    embedding_client: object | None = None,
+) -> RunResponse:
+    run = _get_run(session, workspace_id=workspace_id, run_id=run_id)
+    if run.status != "running" or run.claim_token != claim_token:
+        raise RunExecutionError("Run is not claimed by this worker")
+    version = session.get(WorkflowVersion, run.workflow_version_id)
+    if version is None:
+        raise RunExecutionError("Workflow version not found")
+    start_index = 0
+    if run.current_node_id:
+        sequence = execution_sequence(version.graph)
+        node_index = _node_index(sequence, run.current_node_id)
+        step = _latest_run_step(session, run_id=run.id, node_id=run.current_node_id)
+        if step is not None and step.node_type == "tool" and step.status == "waiting_approval":
+            approval = _approved_approval_for_node(session, run=run, node_id=run.current_node_id)
+            return _resume_tool_node_after_approval(
+                session,
+                workspace_id=workspace_id,
+                approval=approval,
+                run=run,
+                step=step,
+                llm_client=llm_client,
+                embedding_client=embedding_client,
+                clear_claim=True,
+            )
+        start_index = node_index + 1 if step is not None and step.status == "succeeded" else node_index
+    return _execute_running_run(
+        session,
+        workspace_id=workspace_id,
+        run=run,
+        version=version,
+        llm_client=llm_client,
+        embedding_client=embedding_client,
+        start_index=start_index,
+        clear_claim=True,
+    )
+
+
+def _execute_running_run(
+    session: Session,
+    *,
+    workspace_id: UUID,
+    run: Run,
+    version: WorkflowVersion,
+    llm_client: object,
+    embedding_client: object | None,
+    start_index: int = 0,
+    clear_claim: bool = False,
+) -> RunResponse:
     try:
         _execute_run_from_index(
             session,
@@ -267,7 +336,7 @@ def execute_run(
             version=version,
             llm_client=llm_client,
             embedding_client=embedding_client,
-            start_index=0,
+            start_index=start_index,
         )
     except RunWaitingForApproval:
         pass
@@ -286,6 +355,10 @@ def execute_run(
             message="Run failed",
             payload={"error_type": run.error_type, "error_message": run.error_message},
         )
+    if clear_claim:
+        _clear_run_claim(run)
+    if run.status in TERMINAL_RUN_STATUSES:
+        run.current_node_id = None
     session.flush()
     session.refresh(run)
     return run_response(session, run)
@@ -310,6 +383,16 @@ def resume_run_after_approval(
     step = session.get(RunStep, approval.run_step_id)
     if step is None:
         raise RunExecutionError("Approval step not found")
+    if step.node_type == "tool":
+        return _queue_tool_node_after_approval(
+            session,
+            workspace_id=workspace_id,
+            approval=approval,
+            run=run,
+            step=step,
+            decided_by=decided_by,
+            comment=comment,
+        )
 
     now = _now()
     approval.status = "approved"
@@ -327,7 +410,8 @@ def resume_run_after_approval(
     context = _run_context(run)
     context.setdefault("steps", {})[approval.node_id] = {"output": step.output}
     run.state = context
-    run.status = "running"
+    run.status = "queued"
+    run.current_node_id = approval.node_id
     run.error_type = None
     run.error_message = None
     _trace_event(
@@ -345,45 +429,11 @@ def resume_run_after_approval(
         session,
         workspace_id=workspace_id,
         run=run,
-        event_type="run.resumed",
-        actor_type="worker",
-        message="Run resumed after approval",
+        event_type="run.queued",
+        actor_type="system",
+        message="Run queued after approval",
         payload={"approval_id": str(approval.id), "node_id": approval.node_id},
     )
-    session.flush()
-
-    version = session.get(WorkflowVersion, run.workflow_version_id)
-    if version is None:
-        raise RunExecutionError("Workflow version not found")
-    sequence = execution_sequence(version.graph)
-    next_index = _node_index(sequence, approval.node_id) + 1
-    try:
-        _execute_run_from_index(
-            session,
-            workspace_id=workspace_id,
-            run=run,
-            version=version,
-            llm_client=llm_client,
-            embedding_client=embedding_client,
-            start_index=next_index,
-        )
-    except RunWaitingForApproval:
-        pass
-    except Exception as exc:
-        run.status = "failed"
-        run.error_type = exc.__class__.__name__
-        run.error_message = sanitize_provider_error(str(exc))
-        run.finished_at = _now()
-        _trace_event(
-            session,
-            workspace_id=workspace_id,
-            run=run,
-            event_type="run.failed",
-            severity="error",
-            actor_type="worker",
-            message="Run failed after approval resume",
-            payload={"error_type": run.error_type, "error_message": run.error_message},
-        )
     session.flush()
     session.refresh(run)
     return run_response(session, run)
@@ -444,23 +494,251 @@ def reject_approval(
     return run_response(session, run)
 
 
+def claim_next_queued_run(
+    session: Session,
+    *,
+    workspace_id: UUID | None,
+    worker_id: str,
+    lease_seconds: int = 60,
+) -> Run | None:
+    worker_id = worker_id.strip()
+    if not worker_id:
+        raise RunExecutionError("worker_id is required")
+
+    now = _now()
+    claimable_filter = sa.or_(
+        Run.status == "queued",
+        sa.and_(Run.status == "running", Run.lease_expires_at.is_not(None), Run.lease_expires_at < now),
+    )
+    query = select(Run).where(claimable_filter).order_by(Run.created_at.asc(), Run.id.asc()).limit(1)
+    if workspace_id is not None:
+        query = query.where(Run.workspace_id == workspace_id)
+    run = session.scalar(query.with_for_update(skip_locked=True))
+    if run is None:
+        return None
+
+    claim_token = str(uuid4())
+    result = session.execute(
+        sa.update(Run)
+        .where(Run.id == run.id, claimable_filter)
+        .values(
+            status="running",
+            worker_id=worker_id,
+            claim_token=claim_token,
+            lease_expires_at=now + timedelta(seconds=max(1, lease_seconds)),
+            started_at=run.started_at or now,
+            error_type=None,
+            error_message=None,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount != 1:
+        return None
+    session.flush()
+    session.refresh(run)
+    _trace_event(
+        session,
+        workspace_id=run.workspace_id,
+        run=run,
+        event_type="run.started",
+        actor_type="worker",
+        actor_id=worker_id,
+        message="Run claimed by worker",
+        payload={"worker_id": worker_id, "lease_expires_at": run.lease_expires_at.isoformat()},
+    )
+    session.flush()
+    session.refresh(run)
+    return run
+
+
+def _clear_run_claim(run: Run) -> None:
+    run.worker_id = None
+    run.claim_token = None
+    run.lease_expires_at = None
+
+
+def _queue_tool_node_after_approval(
+    session: Session,
+    *,
+    workspace_id: UUID,
+    approval: Approval,
+    run: Run,
+    step: RunStep,
+    decided_by: UUID,
+    comment: str,
+) -> RunResponse:
+    now = _now()
+    approval.status = "approved"
+    approval.decision = "approved"
+    approval.decision_comment = comment
+    approval.decided_by = decided_by
+    approval.decided_at = now
+    run.status = "queued"
+    run.current_node_id = approval.node_id
+    run.error_type = None
+    run.error_message = None
+    step.status = "waiting_approval"
+    step.error_type = None
+    step.error_message = None
+    _trace_event(
+        session,
+        workspace_id=workspace_id,
+        run=run,
+        step=step,
+        event_type="approval.approved",
+        actor_type="user",
+        actor_id=str(decided_by),
+        message=f"Approval approved: {approval.node_name}",
+        payload={"approval_id": str(approval.id), "comment": comment},
+    )
+    _trace_event(
+        session,
+        workspace_id=workspace_id,
+        run=run,
+        event_type="run.queued",
+        actor_type="system",
+        message="Run queued after approval",
+        payload={"approval_id": str(approval.id), "node_id": approval.node_id},
+    )
+    session.flush()
+    session.refresh(run)
+    return run_response(session, run)
+
+
+def _resume_tool_node_after_approval(
+    session: Session,
+    *,
+    workspace_id: UUID,
+    approval: Approval,
+    run: Run,
+    step: RunStep,
+    llm_client: object,
+    embedding_client: object | None,
+    clear_claim: bool = False,
+) -> RunResponse:
+    run.status = "running"
+    run.error_type = None
+    run.error_message = None
+    step.status = "running"
+    step.error_type = None
+    step.error_message = None
+    session.flush()
+
+    version = session.get(WorkflowVersion, run.workflow_version_id)
+    if version is None:
+        raise RunExecutionError("Workflow version not found")
+    sequence = execution_sequence(version.graph)
+    node_index = _node_index(sequence, approval.node_id)
+    node = sequence[node_index]
+    context = _run_context(run)
+
+    try:
+        output = _execute_tool_node(
+            session,
+            workspace_id=workspace_id,
+            run=run,
+            step=step,
+            node=node,
+            node_input=step.input,
+            approval_granted=True,
+        )
+        step.status = "succeeded"
+        step.output = output
+        step.finished_at = _now()
+        context.setdefault("steps", {})[approval.node_id] = {"output": output}
+        run.state = context
+        _trace_event(
+            session,
+            workspace_id=workspace_id,
+            run=run,
+            step=step,
+            event_type="step.succeeded",
+            actor_type="worker",
+            message=f"Step succeeded: {step.node_name}",
+            payload={"node_id": step.node_id, "node_type": step.node_type},
+        )
+        session.flush()
+        _execute_run_from_index(
+            session,
+            workspace_id=workspace_id,
+            run=run,
+            version=version,
+            llm_client=llm_client,
+            embedding_client=embedding_client,
+            start_index=node_index + 1,
+        )
+    except RunWaitingForApproval:
+        pass
+    except Exception as exc:
+        if step.status != "succeeded":
+            step.status = "failed"
+            step.error_type = exc.__class__.__name__
+            step.error_message = sanitize_provider_error(str(exc))
+            step.finished_at = _now()
+        run.status = "failed"
+        run.error_type = exc.__class__.__name__
+        run.error_message = sanitize_provider_error(str(exc))
+        run.finished_at = _now()
+        if step.status == "failed":
+            _trace_event(
+                session,
+                workspace_id=workspace_id,
+                run=run,
+                step=step,
+                event_type="step.failed",
+                severity="error",
+                actor_type="worker",
+                message=f"Step failed: {step.node_name}",
+                payload={
+                    "node_id": step.node_id,
+                    "node_type": step.node_type,
+                    "error_type": step.error_type,
+                    "error_message": step.error_message,
+                },
+            )
+        _trace_event(
+            session,
+            workspace_id=workspace_id,
+            run=run,
+            event_type="run.failed",
+            severity="error",
+            actor_type="worker",
+            message="Run failed after approval resume",
+            payload={"error_type": run.error_type, "error_message": run.error_message},
+        )
+    if clear_claim:
+        _clear_run_claim(run)
+    if run.status in TERMINAL_RUN_STATUSES:
+        run.current_node_id = None
+    session.flush()
+    session.refresh(run)
+    return run_response(session, run)
+
+
 def execute_next_queued_run(
     session: Session,
     *,
     workspace_id: UUID | None,
     llm_client: object,
     embedding_client: object | None = None,
+    worker_id: str = "worker",
+    lease_seconds: int = 60,
 ) -> RunResponse | None:
-    query = select(Run).where(Run.status == "queued").order_by(Run.created_at.asc())
-    if workspace_id is not None:
-        query = query.where(Run.workspace_id == workspace_id)
-    run = session.scalar(query.limit(1))
+    run = claim_next_queued_run(
+        session,
+        workspace_id=workspace_id,
+        worker_id=worker_id,
+        lease_seconds=lease_seconds,
+    )
     if run is None:
         return None
-    return execute_run(
+    if run.claim_token is None:
+        raise RunExecutionError("Claimed run is missing claim token")
+    return execute_claimed_run(
         session,
         workspace_id=run.workspace_id,
         run_id=run.id,
+        claim_token=run.claim_token,
         llm_client=llm_client,
         embedding_client=embedding_client,
     )
@@ -538,6 +816,31 @@ def _node_index(sequence: list[dict[str, Any]], node_id: str) -> int:
     raise RunExecutionError("Approval node not found in workflow graph")
 
 
+def _latest_run_step(session: Session, *, run_id: UUID, node_id: str) -> RunStep | None:
+    return session.scalar(
+        select(RunStep)
+        .where(RunStep.run_id == run_id, RunStep.node_id == node_id)
+        .order_by(RunStep.attempt.desc(), RunStep.created_at.desc(), RunStep.id.desc())
+        .limit(1)
+    )
+
+
+def _approved_approval_for_node(session: Session, *, run: Run, node_id: str) -> Approval:
+    approval = session.scalar(
+        select(Approval)
+        .where(
+            Approval.run_id == run.id,
+            Approval.node_id == node_id,
+            Approval.status == "approved",
+        )
+        .order_by(Approval.decided_at.desc(), Approval.created_at.desc(), Approval.id.desc())
+        .limit(1)
+    )
+    if approval is None:
+        raise RunExecutionError("Approved approval not found for checkpoint")
+    return approval
+
+
 def validate_phase3_graph(
     session: Session,
     *,
@@ -602,6 +905,7 @@ def validate_phase3_graph(
         raise WorkflowValidationError("Phase 6 MVP graph must be a single reachable sequential path")
 
     referenced_agent_versions: list[str] = []
+    referenced_tool_versions: list[dict[str, Any]] = []
     node_snapshots: dict[str, Any] = {}
     for node in sequence:
         if node.get("type") != "agent":
@@ -633,6 +937,30 @@ def validate_phase3_graph(
                     "title": str(config.get("title") or node["name"]),
                     "risk_level": str(config.get("risk_level") or "medium"),
                 }
+            elif node.get("type") == "tool":
+                config = _node_config(node)
+                agent_id = _coerce_uuid(config.get("agent_id"), "Tool node requires agent_id")
+                tool_id = _coerce_uuid(config.get("tool_id"), "Tool node requires tool_id")
+                agent = session.scalar(
+                    select(Agent).where(Agent.id == agent_id, Agent.workspace_id == workspace_id)
+                )
+                if agent is None:
+                    raise WorkflowValidationError("Tool node must reference an Agent in this workspace")
+                tool = session.scalar(
+                    select(Tool).where(Tool.id == tool_id, Tool.workspace_id == workspace_id)
+                )
+                if tool is None:
+                    raise WorkflowValidationError("Tool node must reference a Tool in this workspace")
+                snapshot = {
+                    "agent_id": str(agent.id),
+                    "tool_id": str(tool.id),
+                    "tool_name": tool.name,
+                    "version": tool.version,
+                    "risk_level": tool.risk_level,
+                    "requires_approval": tool.requires_approval,
+                }
+                node_snapshots[str(node["id"])] = snapshot
+                referenced_tool_versions.append(snapshot)
             continue
         version_id = _coerce_uuid(_node_config(node).get("agent_version_id"), "Agent node requires agent_version_id")
         agent_version = session.scalar(
@@ -658,6 +986,7 @@ def validate_phase3_graph(
 
     return {
         "referenced_agent_versions": referenced_agent_versions,
+        "referenced_tool_versions": referenced_tool_versions,
         "node_snapshots": node_snapshots,
     }
 
@@ -732,6 +1061,11 @@ def run_response(session: Session, run: Run) -> RunResponse:
             select(TraceEvent).where(TraceEvent.run_id == run.id).order_by(TraceEvent.created_at.asc())
         )
     )
+    tool_calls = list(
+        session.scalars(
+            select(ToolCall).where(ToolCall.run_id == run.id).order_by(ToolCall.created_at.asc())
+        )
+    )
     approvals = list(
         session.scalars(
             select(Approval).where(Approval.run_id == run.id).order_by(Approval.created_at.asc(), Approval.id.asc())
@@ -755,6 +1089,7 @@ def run_response(session: Session, run: Run) -> RunResponse:
         updated_at=run.updated_at,
         steps=steps,
         llm_calls=calls,
+        tool_calls=[tool_services.tool_call_response(call) for call in tool_calls],
         trace_events=[TraceEventResponse.model_validate(event) for event in events],
         approvals=[ApprovalResponse.model_validate(approval) for approval in approvals],
     )
@@ -771,6 +1106,7 @@ def _execute_node(
     embedding_client: object | None,
 ) -> dict[str, Any]:
     now = _now()
+    run.current_node_id = str(node["id"])
     step = RunStep(
         workspace_id=workspace_id,
         run_id=run.id,
@@ -821,6 +1157,17 @@ def _execute_node(
                 node=node,
                 node_input=step_input,
                 embedding_client=embedding_client,
+            )
+        elif node["type"] == "tool":
+            step_input = resolve_mapping(node.get("input_mapping", {}), context)
+            step.input = step_input
+            output = _execute_tool_node(
+                session,
+                workspace_id=workspace_id,
+                run=run,
+                step=step,
+                node=node,
+                node_input=step_input,
             )
         elif node["type"] == "approval":
             step_input = resolve_mapping(node.get("input_mapping", {}), context)
@@ -1018,6 +1365,147 @@ def _execute_retrieval_node(
     }
 
 
+def _execute_tool_node(
+    session: Session,
+    *,
+    workspace_id: UUID,
+    run: Run,
+    step: RunStep,
+    node: dict[str, Any],
+    node_input: dict[str, Any],
+    approval_granted: bool = False,
+) -> dict[str, Any]:
+    config = _node_config(node)
+    agent_id = _coerce_uuid(config.get("agent_id"), "Tool node requires agent_id")
+    tool_id = _coerce_uuid(config.get("tool_id"), "Tool node requires tool_id")
+    tool = tool_services.get_tool(session, workspace_id=workspace_id, tool_id=tool_id)
+    if _tool_requires_approval(tool) and not approval_granted:
+        _request_tool_approval(
+            session,
+            workspace_id=workspace_id,
+            run=run,
+            step=step,
+            node=node,
+            node_input=node_input,
+            tool=tool,
+        )
+        raise RunWaitingForApproval()
+    try:
+        output, call = tool_services.invoke_tool(
+            session,
+            workspace_id=workspace_id,
+            tool_id=tool_id,
+            agent_id=agent_id,
+            tool_input=node_input,
+            run_id=run.id,
+            run_step_id=step.id,
+            approval_granted=approval_granted,
+        )
+    except ToolExecutionRejected as exc:
+        if exc.tool_call is not None:
+            _trace_event(
+                session,
+                workspace_id=workspace_id,
+                run=run,
+                step=step,
+                event_type="tool.failed",
+                severity="error",
+                actor_type="worker",
+                message=f"Tool failed: {exc.tool_call.tool_name}",
+                payload={
+                    "tool_call_id": str(exc.tool_call.id),
+                    "tool_name": exc.tool_call.tool_name,
+                    "status": exc.tool_call.status,
+                    "error_message": exc.detail,
+                },
+            )
+        raise
+    _trace_event(
+        session,
+        workspace_id=workspace_id,
+        run=run,
+        step=step,
+        event_type="tool.succeeded",
+        actor_type="worker",
+        message=f"Tool succeeded: {call.tool_name}",
+        payload={
+            "tool_call_id": str(call.id),
+            "tool_name": call.tool_name,
+            "output_summary": redact_mapping(output),
+        },
+    )
+    return output
+
+
+def _request_tool_approval(
+    session: Session,
+    *,
+    workspace_id: UUID,
+    run: Run,
+    step: RunStep,
+    node: dict[str, Any],
+    node_input: dict[str, Any],
+    tool: Tool,
+) -> None:
+    existing = session.scalar(
+        select(Approval).where(
+            Approval.run_id == run.id,
+            Approval.node_id == str(node["id"]),
+            Approval.status == "pending",
+        )
+    )
+    if existing is not None:
+        run.status = "waiting_approval"
+        step.status = "waiting_approval"
+        session.flush()
+        return
+
+    config = _node_config(node)
+    title = str(config.get("approval_title") or f"Approve tool: {tool.display_name}").strip()
+    instructions = str(config.get("approval_instructions") or tool.description or "").strip()
+    approval = Approval(
+        workspace_id=workspace_id,
+        run_id=run.id,
+        run_step_id=step.id,
+        node_id=str(node["id"]),
+        node_name=str(node["name"]),
+        title=title,
+        instructions=instructions,
+        risk_level=tool.risk_level,
+        status="pending",
+        requested_payload=redact_mapping(node_input),
+        decision=None,
+        decision_comment="",
+    )
+    session.add(approval)
+    session.flush()
+    step.status = "waiting_approval"
+    step.output = {"approval_id": str(approval.id), "status": "pending"}
+    run.status = "waiting_approval"
+    _trace_event(
+        session,
+        workspace_id=workspace_id,
+        run=run,
+        step=step,
+        event_type="approval.requested",
+        actor_type="system",
+        message=f"Approval requested: {step.node_name}",
+        payload={
+            "approval_id": str(approval.id),
+            "node_id": step.node_id,
+            "tool_id": str(tool.id),
+            "tool_name": tool.name,
+            "risk_level": tool.risk_level,
+            "input_summary": redact_mapping(node_input),
+        },
+    )
+    session.flush()
+
+
+def _tool_requires_approval(tool: Tool) -> bool:
+    return tool.requires_approval or tool.risk_level in tool_services.APPROVAL_RISK_LEVELS
+
+
 def _execute_approval_node(
     session: Session,
     *,
@@ -1122,11 +1610,18 @@ def resolve_mapping(mapping: Any, context: dict[str, Any]) -> dict[str, Any]:
         return {}
     resolved: dict[str, Any] = {}
     for key, value in mapping.items():
-        if isinstance(value, str) and value.startswith("$."):
-            resolved[str(key)] = _resolve_path(value, context)
-        else:
-            resolved[str(key)] = value
+        resolved[str(key)] = _resolve_value(value, context)
     return resolved
+
+
+def _resolve_value(value: Any, context: dict[str, Any]) -> Any:
+    if isinstance(value, str) and value.startswith("$."):
+        return _resolve_path(value, context)
+    if isinstance(value, list):
+        return [_resolve_value(item, context) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _resolve_value(item, context) for key, item in value.items()}
+    return value
 
 
 def _resolve_path(path: str, context: dict[str, Any]) -> Any:

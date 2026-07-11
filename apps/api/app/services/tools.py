@@ -1,4 +1,3 @@
-from dataclasses import dataclass
 from time import perf_counter
 from typing import Any
 from uuid import UUID
@@ -44,11 +43,12 @@ class ToolAgentNotFoundError(LookupError):
     pass
 
 
-@dataclass(frozen=True)
 class ToolExecutionRejected(Exception):
-    status_code: int
-    detail: str
-    tool_call: ToolCall | None = None
+    def __init__(self, *, status_code: int, detail: str, tool_call: ToolCall | None = None) -> None:
+        super().__init__(detail)
+        self.status_code = status_code
+        self.detail = detail
+        self.tool_call = tool_call
 
 
 BUILT_IN_TOOLS: list[ToolCreate] = [
@@ -274,6 +274,9 @@ def invoke_tool(
     tool_id: UUID,
     agent_id: UUID,
     tool_input: dict[str, Any],
+    run_id: UUID | None = None,
+    run_step_id: UUID | None = None,
+    approval_granted: bool = False,
 ) -> tuple[dict[str, Any], ToolCall]:
     tool = get_tool(session, workspace_id=workspace_id, tool_id=tool_id)
     agent = _get_agent(session, workspace_id=workspace_id, agent_id=agent_id)
@@ -288,6 +291,8 @@ def invoke_tool(
             status="blocked",
             started=started,
             tool_input=tool_input,
+            run_id=run_id,
+            run_step_id=run_step_id,
             error_message="Tool is disabled",
         )
         raise ToolExecutionRejected(status_code=409, detail="Tool is disabled", tool_call=call)
@@ -304,6 +309,8 @@ def invoke_tool(
             status="blocked",
             started=started,
             tool_input=tool_input,
+            run_id=run_id,
+            run_step_id=run_step_id,
             error_message="Agent is not authorized to use this tool",
         )
         raise ToolExecutionRejected(
@@ -323,11 +330,13 @@ def invoke_tool(
             status="failed",
             started=started,
             tool_input=tool_input,
+            run_id=run_id,
+            run_step_id=run_step_id,
             error_message=str(exc),
         )
         raise ToolExecutionRejected(status_code=422, detail=str(exc), tool_call=call) from exc
 
-    if tool.requires_approval or tool.risk_level in APPROVAL_RISK_LEVELS:
+    if (tool.requires_approval or tool.risk_level in APPROVAL_RISK_LEVELS) and not approval_granted:
         call = _log_tool_call(
             session,
             workspace_id=workspace_id,
@@ -336,6 +345,8 @@ def invoke_tool(
             status="blocked",
             started=started,
             tool_input=tool_input,
+            run_id=run_id,
+            run_step_id=run_step_id,
             error_message="Tool requires approval before execution",
         )
         raise ToolExecutionRejected(
@@ -355,6 +366,8 @@ def invoke_tool(
             status="failed",
             started=started,
             tool_input=tool_input,
+            run_id=run_id,
+            run_step_id=run_step_id,
             error_message=str(exc),
         )
         raise ToolExecutionRejected(status_code=422, detail=str(exc), tool_call=call) from exc
@@ -367,6 +380,8 @@ def invoke_tool(
         status="succeeded",
         started=started,
         tool_input=tool_input,
+        run_id=run_id,
+        run_step_id=run_step_id,
         output_summary=redact_mapping(output),
     )
     return output, call
@@ -483,6 +498,8 @@ def _log_tool_call(
     status: str,
     started: float,
     tool_input: dict[str, Any],
+    run_id: UUID | None = None,
+    run_step_id: UUID | None = None,
     output_summary: dict[str, Any] | None = None,
     error_message: str | None = None,
 ) -> ToolCall:
@@ -490,6 +507,8 @@ def _log_tool_call(
         workspace_id=workspace_id,
         agent_id=agent_id,
         tool_id=tool.id,
+        run_id=run_id,
+        run_step_id=run_step_id,
         tool_name=tool.name,
         status=status,
         risk_level=tool.risk_level,

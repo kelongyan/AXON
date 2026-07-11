@@ -465,6 +465,10 @@ class Run(Base):
         nullable=False,
     )
     status: Mapped[str] = mapped_column(sa.String(32), nullable=False, default="pending")
+    worker_id: Mapped[str | None] = mapped_column(sa.String(160), nullable=True)
+    claim_token: Mapped[str | None] = mapped_column(sa.String(80), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
+    current_node_id: Mapped[str | None] = mapped_column(sa.String(160), nullable=True)
     input: Mapped[dict[str, object]] = mapped_column(sa.JSON, nullable=False, default=dict)
     output: Mapped[dict[str, object] | None] = mapped_column(sa.JSON, nullable=True)
     state: Mapped[dict[str, object]] = mapped_column(sa.JSON, nullable=False, default=dict)

@@ -1,4 +1,5 @@
 import { apiRequest } from "./api-client";
+import type { ToolCall } from "./tools";
 
 export type WorkflowFormValues = {
   name: string;
@@ -154,6 +155,7 @@ export type WorkflowRun = {
   updated_at: string;
   steps: RunStep[];
   llm_calls: RunLlmCall[];
+  tool_calls: ToolCall[];
   trace_events: TraceEvent[];
   approvals: Approval[];
 };
@@ -323,4 +325,8 @@ export function formatRunCostSummary(run: Pick<WorkflowRun, "llm_calls">): RunCo
     }),
     { totalTokens: 0, promptTokens: 0, completionTokens: 0, totalLatencyMs: 0 },
   );
+}
+
+export function shouldPollRunStatus(status: string): boolean {
+  return status === "queued" || status === "running";
 }

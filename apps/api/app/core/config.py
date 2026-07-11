@@ -18,6 +18,10 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+psycopg://agentflow:agentflow@localhost:5432/agentflow"
     redis_url: str = "redis://localhost:6379/0"
+    worker_id: str = "worker"
+    worker_poll_interval_seconds: int = 30
+    worker_lease_seconds: int = 60
+    worker_max_runs_per_cycle: int = 10
 
     minio_endpoint_url: str = "http://localhost:9000"
     minio_access_key: str = "agentflow"
@@ -52,6 +56,10 @@ class Settings(BaseSettings):
             "cors_allowed_origins": self.cors_allowed_origin_list,
             "database_url": self._redact_url(self.database_url),
             "redis_url": self._redact_url(self.redis_url),
+            "worker_id": self.worker_id,
+            "worker_poll_interval_seconds": self.worker_poll_interval_seconds,
+            "worker_lease_seconds": self.worker_lease_seconds,
+            "worker_max_runs_per_cycle": self.worker_max_runs_per_cycle,
             "minio_endpoint_url": self.minio_endpoint_url,
             "dev_user_email": self.dev_user_email,
             "default_workspace_slug": self.default_workspace_slug,
