@@ -1,6 +1,7 @@
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
@@ -230,6 +231,39 @@ def test_worker_claim_marks_oldest_queued_run_and_prevents_duplicate_claims():
     assert stored_run.started_at is not None
 
 
+def test_run_detail_exposes_worker_claim_observability():
+    client = create_test_client()
+    researcher = create_agent(client, "Claim Detail Agent")
+    workflow = client.post("/workflows", json={"name": "Claim Detail Flow"}).json()
+    client.post(
+        f"/workflows/{workflow['id']}/versions",
+        json={"graph": simple_graph(researcher["current_version_id"])},
+    )
+    run = client.post(
+        f"/workflows/{workflow['id']}/runs",
+        json={"input": {"topic": "AgentFlow", "audience": "CTO"}},
+    ).json()
+
+    with client.app.state.session_factory() as session:
+        claimed = workflows.claim_next_queued_run(
+            session,
+            workspace_id=None,
+            worker_id="worker-a",
+            lease_seconds=120,
+        )
+        session.commit()
+
+    detail = client.get(f"/runs/{run['id']}")
+
+    assert claimed is not None
+    assert detail.status_code == 200
+    payload = detail.json()
+    assert payload["worker_id"] == "worker-a"
+    assert payload["lease_expires_at"] is not None
+    assert payload["current_node_id"] is None
+    assert "claim_token" not in payload
+
+
 def test_worker_claim_reclaims_expired_running_lease():
     client = create_test_client()
     researcher = create_agent(client, "Expired Claim Agent")
@@ -275,6 +309,184 @@ def test_worker_claim_reclaims_expired_running_lease():
     assert reclaimed.worker_id == "worker-b"
     assert reclaimed.claim_token != first_claim_token
     assert reclaimed.status == "running"
+
+
+def test_worker_renew_run_lease_keeps_claim_from_expiring():
+    client = create_test_client()
+    researcher = create_agent(client, "Renew Claim Agent")
+    workflow = client.post("/workflows", json={"name": "Renew Claim Flow"}).json()
+    client.post(
+        f"/workflows/{workflow['id']}/versions",
+        json={"graph": simple_graph(researcher["current_version_id"])},
+    )
+    run = client.post(
+        f"/workflows/{workflow['id']}/runs",
+        json={"input": {"topic": "AgentFlow", "audience": "CTO"}},
+    ).json()
+
+    with client.app.state.session_factory() as session:
+        claimed = workflows.claim_next_queued_run(
+            session,
+            workspace_id=None,
+            worker_id="worker-a",
+            lease_seconds=1,
+        )
+        assert claimed is not None
+        assert claimed.claim_token is not None
+        expired_at = datetime.now(UTC) - timedelta(seconds=1)
+        claimed.lease_expires_at = expired_at
+        session.flush()
+
+        renewed = workflows.renew_run_lease(
+            session,
+            workspace_id=None,
+            run_id=UUID(run["id"]),
+            claim_token=claimed.claim_token,
+            lease_seconds=120,
+        )
+        duplicate = workflows.claim_next_queued_run(
+            session,
+            workspace_id=None,
+            worker_id="worker-b",
+            lease_seconds=120,
+        )
+        stored_run = session.get(Run, UUID(run["id"]))
+
+    assert renewed is True
+    assert duplicate is None
+    assert stored_run is not None
+    assert stored_run.worker_id == "worker-a"
+    assert stored_run.lease_expires_at is not None
+    assert stored_run.lease_expires_at != expired_at
+
+
+def test_claim_fence_rejects_lost_claim_token():
+    client = create_test_client()
+    researcher = create_agent(client, "Lost Claim Agent")
+    workflow = client.post("/workflows", json={"name": "Lost Claim Flow"}).json()
+    client.post(
+        f"/workflows/{workflow['id']}/versions",
+        json={"graph": simple_graph(researcher["current_version_id"])},
+    )
+    run = client.post(
+        f"/workflows/{workflow['id']}/runs",
+        json={"input": {"topic": "AgentFlow", "audience": "CTO"}},
+    ).json()
+
+    with client.app.state.session_factory() as session:
+        claimed = workflows.claim_next_queued_run(
+            session,
+            workspace_id=None,
+            worker_id="worker-a",
+            lease_seconds=120,
+        )
+        assert claimed is not None
+        assert claimed.claim_token is not None
+        claim_token = claimed.claim_token
+        claimed.claim_token = "stolen-token"
+        session.flush()
+
+        with pytest.raises(workflows.RunExecutionError, match="Run claim was lost"):
+            workflows._assert_claim_still_owned(
+                session,
+                run_id=claimed.id,
+                claim_token=claim_token,
+            )
+
+
+def test_cancel_queued_run_marks_terminal_and_prevents_worker_claim():
+    client = create_test_client()
+    researcher = create_agent(client, "Cancel Queued Agent")
+    workflow = client.post("/workflows", json={"name": "Cancel Queued Flow"}).json()
+    client.post(
+        f"/workflows/{workflow['id']}/versions",
+        json={"graph": simple_graph(researcher["current_version_id"])},
+    )
+    run = client.post(
+        f"/workflows/{workflow['id']}/runs",
+        json={"input": {"topic": "AgentFlow", "audience": "CTO"}},
+    ).json()
+
+    response = client.post(f"/runs/{run['id']}/cancel", json={"comment": "No longer needed."})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "cancelled"
+    assert body["error_type"] == "RunCancelled"
+    assert body["error_message"] == "No longer needed."
+    assert body["cancelled_at"] is not None
+    assert body["finished_at"] is not None
+    assert "run.cancelled" in [event["event_type"] for event in body["trace_events"]]
+
+    with client.app.state.session_factory() as session:
+        executed = workflows.execute_next_queued_run(
+            session,
+            workspace_id=None,
+            worker_id="worker-a",
+            llm_client=object(),
+        )
+
+    assert executed is None
+
+
+def test_cancel_waiting_approval_run_cancels_pending_approval_without_calling_llm():
+    fake_llm = SequencedLLMClient(outputs=["should not be used"])
+    client = create_test_client(fake_llm)
+    researcher = create_agent(client, "Cancel Approval Agent")
+    workflow = client.post("/workflows", json={"name": "Cancel Approval Flow"}).json()
+    client.post(
+        f"/workflows/{workflow['id']}/versions",
+        json={"graph": approval_graph(researcher["current_version_id"])},
+    )
+    run = client.post(
+        f"/workflows/{workflow['id']}/runs",
+        json={"input": {"topic": "AgentFlow approval", "audience": "CTO"}},
+    ).json()
+    paused = client.post(f"/runs/{run['id']}/execute").json()
+    assert paused["status"] == "waiting_approval"
+
+    response = client.post(f"/runs/{run['id']}/cancel", json={"comment": "Stop before provider call."})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "cancelled"
+    assert body["error_type"] == "RunCancelled"
+    assert body["approvals"][0]["status"] == "cancelled"
+    assert body["approvals"][0]["decision"] == "cancelled"
+    assert body["approvals"][0]["decision_comment"] == "Stop before provider call."
+    assert body["steps"][-1]["status"] == "cancelled"
+    assert body["steps"][-1]["output"]["status"] == "cancelled"
+    assert body["steps"][-1]["error_type"] == "RunCancelled"
+    assert "run.cancelled" in [event["event_type"] for event in body["trace_events"]]
+    assert fake_llm.calls == []
+
+    pending = client.get("/approvals?status=pending").json()
+    assert pending["items"] == []
+
+
+def test_cancel_succeeded_run_is_rejected():
+    fake_llm = SequencedLLMClient(outputs=["finished"])
+    client = create_test_client(fake_llm)
+    researcher = create_agent(client, "Cancel Finished Agent")
+    workflow = client.post("/workflows", json={"name": "Cancel Finished Flow"}).json()
+    client.post(
+        f"/workflows/{workflow['id']}/versions",
+        json={"graph": simple_graph(researcher["current_version_id"])},
+    )
+    run = client.post(
+        f"/workflows/{workflow['id']}/runs",
+        json={"input": {"topic": "AgentFlow", "audience": "CTO"}},
+    ).json()
+    executed = client.post(f"/runs/{run['id']}/execute").json()
+
+    response = client.post(f"/runs/{run['id']}/cancel", json={"comment": "Too late."})
+
+    assert executed["status"] == "succeeded"
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Run cannot be cancelled from status: succeeded"
+    detail = client.get(f"/runs/{run['id']}").json()
+    assert detail["status"] == "succeeded"
+    assert detail["cancelled_at"] is None
 
 
 def test_worker_execute_next_queued_run_uses_claim_and_clears_it_after_terminal_state():

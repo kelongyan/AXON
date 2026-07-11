@@ -229,6 +229,89 @@ def get_run_detail(session: Session, *, workspace_id: UUID, run_id: UUID) -> Run
     return run_response(session, run)
 
 
+def cancel_run(
+    session: Session,
+    *,
+    workspace_id: UUID,
+    run_id: UUID,
+    cancelled_by: UUID,
+    comment: str,
+) -> RunResponse:
+    run = _get_run(session, workspace_id=workspace_id, run_id=run_id)
+    if run.status not in {"queued", "waiting_approval"}:
+        raise RunExecutionError(f"Run cannot be cancelled from status: {run.status}")
+
+    now = _now()
+    message = comment or "Run cancelled"
+    run.status = "cancelled"
+    run.error_type = "RunCancelled"
+    run.error_message = message
+    run.finished_at = now
+    run.cancelled_at = now
+    run.current_node_id = None
+    _clear_run_claim(run)
+    pending_approvals = list(
+        session.scalars(
+            select(Approval).where(
+                Approval.run_id == run.id,
+                Approval.status == "pending",
+            )
+        )
+    )
+    for approval in pending_approvals:
+        approval.status = "cancelled"
+        approval.decision = "cancelled"
+        approval.decision_comment = comment
+        approval.decided_by = cancelled_by
+        approval.decided_at = now
+    waiting_steps = list(
+        session.scalars(
+            select(RunStep).where(
+                RunStep.run_id == run.id,
+                RunStep.status == "waiting_approval",
+            )
+        )
+    )
+    for step in waiting_steps:
+        step.status = "cancelled"
+        step.output = {
+            **(step.output if isinstance(step.output, dict) else {}),
+            "status": "cancelled",
+            "decision": "cancelled",
+            "comment": comment,
+        }
+        step.error_type = "RunCancelled"
+        step.error_message = message
+        step.finished_at = now
+        state = dict(run.state or {})
+        state_steps = dict(state.get("steps") or {})
+        current_step_state = dict(state_steps.get(step.node_id) or {})
+        current_step_output = current_step_state.get("output")
+        current_step_state["output"] = {
+            **(current_step_output if isinstance(current_step_output, dict) else {}),
+            "status": "cancelled",
+            "decision": "cancelled",
+            "comment": comment,
+        }
+        state_steps[step.node_id] = current_step_state
+        state["steps"] = state_steps
+        run.state = state
+    _trace_event(
+        session,
+        workspace_id=workspace_id,
+        run=run,
+        event_type="run.cancelled",
+        severity="warning",
+        actor_type="user",
+        actor_id=str(cancelled_by),
+        message="Run cancelled",
+        payload={"comment": comment},
+    )
+    session.flush()
+    session.refresh(run)
+    return run_response(session, run)
+
+
 def execute_run(
     session: Session,
     *,
@@ -303,6 +386,7 @@ def execute_claimed_run(
                 llm_client=llm_client,
                 embedding_client=embedding_client,
                 clear_claim=True,
+                expected_claim_token=claim_token,
             )
         start_index = node_index + 1 if step is not None and step.status == "succeeded" else node_index
     return _execute_running_run(
@@ -314,6 +398,7 @@ def execute_claimed_run(
         embedding_client=embedding_client,
         start_index=start_index,
         clear_claim=True,
+        expected_claim_token=claim_token,
     )
 
 
@@ -327,6 +412,7 @@ def _execute_running_run(
     embedding_client: object | None,
     start_index: int = 0,
     clear_claim: bool = False,
+    expected_claim_token: str | None = None,
 ) -> RunResponse:
     try:
         _execute_run_from_index(
@@ -355,6 +441,8 @@ def _execute_running_run(
             message="Run failed",
             payload={"error_type": run.error_type, "error_message": run.error_message},
         )
+    if clear_claim and expected_claim_token is not None:
+        _assert_claim_still_owned(session, run_id=run.id, claim_token=expected_claim_token)
     if clear_claim:
         _clear_run_claim(run)
     if run.status in TERMINAL_RUN_STATUSES:
@@ -551,10 +639,46 @@ def claim_next_queued_run(
     return run
 
 
+def renew_run_lease(
+    session: Session,
+    *,
+    workspace_id: UUID | None,
+    run_id: UUID,
+    claim_token: str,
+    lease_seconds: int = 60,
+) -> bool:
+    claim_token = claim_token.strip()
+    if not claim_token:
+        raise RunExecutionError("claim_token is required")
+
+    query = (
+        sa.update(Run)
+        .where(
+            Run.id == run_id,
+            Run.status == "running",
+            Run.claim_token == claim_token,
+        )
+        .values(lease_expires_at=_now() + timedelta(seconds=max(1, lease_seconds)))
+        .execution_options(synchronize_session="fetch")
+    )
+    if workspace_id is not None:
+        query = query.where(Run.workspace_id == workspace_id)
+    result = session.execute(query)
+    session.flush()
+    return result.rowcount == 1
+
+
 def _clear_run_claim(run: Run) -> None:
     run.worker_id = None
     run.claim_token = None
     run.lease_expires_at = None
+
+
+def _assert_claim_still_owned(session: Session, *, run_id: UUID, claim_token: str) -> None:
+    with session.no_autoflush:
+        current_token = session.scalar(select(Run.__table__.c.claim_token).where(Run.__table__.c.id == run_id))
+    if current_token != claim_token:
+        raise RunExecutionError("Run claim was lost before execution completed")
 
 
 def _queue_tool_node_after_approval(
@@ -615,6 +739,7 @@ def _resume_tool_node_after_approval(
     llm_client: object,
     embedding_client: object | None,
     clear_claim: bool = False,
+    expected_claim_token: str | None = None,
 ) -> RunResponse:
     run.status = "running"
     run.error_type = None
@@ -706,6 +831,8 @@ def _resume_tool_node_after_approval(
             message="Run failed after approval resume",
             payload={"error_type": run.error_type, "error_message": run.error_message},
         )
+    if clear_claim and expected_claim_token is not None:
+        _assert_claim_still_owned(session, run_id=run.id, claim_token=expected_claim_token)
     if clear_claim:
         _clear_run_claim(run)
     if run.status in TERMINAL_RUN_STATUSES:
@@ -1082,6 +1209,9 @@ def run_response(session: Session, run: Run) -> RunResponse:
         output=run.output,
         error_type=run.error_type,
         error_message=run.error_message,
+        worker_id=run.worker_id,
+        lease_expires_at=run.lease_expires_at,
+        current_node_id=run.current_node_id,
         started_at=run.started_at,
         finished_at=run.finished_at,
         cancelled_at=run.cancelled_at,

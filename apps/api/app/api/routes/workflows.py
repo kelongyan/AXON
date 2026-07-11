@@ -9,6 +9,7 @@ from app.db.session import get_session
 from app.schemas.workflows import (
     ApprovalDecisionRequest,
     ApprovalListResponse,
+    RunCancelRequest,
     RunCreate,
     RunListResponse,
     RunResponse,
@@ -149,6 +150,27 @@ def execute_run(
             run_id=run_id,
             llm_client=request.app.state.llm_client,
             embedding_client=request.app.state.embedding_client,
+        )
+    except workflows.RunNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except workflows.RunExecutionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/runs/{run_id}/cancel", response_model=RunResponse)
+def cancel_run(
+    run_id: UUID,
+    payload: RunCancelRequest,
+    session: Session = Depends(get_session),
+    context: RequestContext = Depends(get_request_context),
+) -> RunResponse:
+    try:
+        return workflows.cancel_run(
+            session,
+            workspace_id=context.workspace.id,
+            run_id=run_id,
+            cancelled_by=context.user.id,
+            comment=payload.comment,
         )
     except workflows.RunNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

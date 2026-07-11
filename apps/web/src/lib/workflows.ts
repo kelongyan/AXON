@@ -148,6 +148,9 @@ export type WorkflowRun = {
   output: Record<string, unknown> | null;
   error_type: string | null;
   error_message: string | null;
+  worker_id: string | null;
+  lease_expires_at: string | null;
+  current_node_id: string | null;
   started_at: string | null;
   finished_at: string | null;
   cancelled_at: string | null;
@@ -165,6 +168,12 @@ export type RunCostSummary = {
   promptTokens: number;
   completionTokens: number;
   totalLatencyMs: number;
+};
+
+export type RunRuntimeSummary = {
+  worker: string;
+  leaseExpiresAt: string;
+  checkpoint: string;
 };
 
 export function buildWorkflowPayload(values: WorkflowFormValues): WorkflowPayload {
@@ -272,6 +281,13 @@ export async function executeRun(runId: string): Promise<WorkflowRun> {
   return apiRequest<WorkflowRun>(`/runs/${runId}/execute`, { method: "POST" });
 }
 
+export async function cancelRun(runId: string, comment: string): Promise<WorkflowRun> {
+  return apiRequest<WorkflowRun>(`/runs/${runId}/cancel`, {
+    method: "POST",
+    body: JSON.stringify({ comment }),
+  });
+}
+
 export async function fetchApprovals(status?: string): Promise<Approval[]> {
   const suffix = status ? `?status=${encodeURIComponent(status)}` : "";
   const response = await apiRequest<{ items: Approval[] }>(`/approvals${suffix}`);
@@ -327,6 +343,20 @@ export function formatRunCostSummary(run: Pick<WorkflowRun, "llm_calls">): RunCo
   );
 }
 
+export function formatRunRuntimeSummary(
+  run: Pick<WorkflowRun, "worker_id" | "lease_expires_at" | "current_node_id">,
+): RunRuntimeSummary {
+  return {
+    worker: run.worker_id ?? "Unclaimed",
+    leaseExpiresAt: run.lease_expires_at ?? "No active lease",
+    checkpoint: run.current_node_id ?? "None",
+  };
+}
+
 export function shouldPollRunStatus(status: string): boolean {
   return status === "queued" || status === "running";
+}
+
+export function canCancelRunStatus(status: string): boolean {
+  return status === "queued" || status === "waiting_approval";
 }

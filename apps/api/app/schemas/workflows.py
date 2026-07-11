@@ -127,6 +127,10 @@ class ApprovalDecisionRequest(TrimmedTextModel):
     comment: str = ""
 
 
+class RunCancelRequest(TrimmedTextModel):
+    comment: str = ""
+
+
 class ApprovalResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -162,6 +166,9 @@ class RunResponse(BaseModel):
     output: dict[str, Any] | None
     error_type: str | None
     error_message: str | None
+    worker_id: str | None
+    lease_expires_at: datetime | None
+    current_node_id: str | None
     started_at: datetime | None
     finished_at: datetime | None
     cancelled_at: datetime | None

@@ -1,3 +1,4 @@
+from threading import Event
 from types import SimpleNamespace
 
 from app.worker import main as worker_main
@@ -27,37 +28,90 @@ class FakeLogger:
         self.infos.append((message, extra))
 
 
-def test_run_worker_once_passes_configured_claim_options(monkeypatch):
-    session = FakeSession()
+def test_run_worker_once_commits_claim_before_executing_claimed_run(monkeypatch):
     llm_client = object()
     embedding_client = object()
     calls: list[dict[str, object]] = []
+    sessions: list[FakeSession] = []
+    claimed_session: dict[str, FakeSession] = {}
+    heartbeat_seen = Event()
+    renew_calls: list[dict[str, object]] = []
 
     def session_factory() -> FakeSession:
+        session = FakeSession()
+        sessions.append(session)
         return session
 
-    def fake_execute_next_queued_run(
+    def fake_claim_next_queued_run(
         current_session: FakeSession,
         *,
         workspace_id: object,
-        llm_client: object,
-        embedding_client: object,
         worker_id: str,
         lease_seconds: int,
     ) -> SimpleNamespace:
+        claimed_session["session"] = current_session
         calls.append(
             {
+                "action": "claim",
                 "session": current_session,
                 "workspace_id": workspace_id,
-                "llm_client": llm_client,
-                "embedding_client": embedding_client,
                 "worker_id": worker_id,
                 "lease_seconds": lease_seconds,
             }
         )
+        return SimpleNamespace(id="run-1", workspace_id="workspace-1", claim_token="claim-token-1")
+
+    def fake_renew_run_lease(
+        current_session: FakeSession,
+        *,
+        workspace_id: object,
+        run_id: str,
+        claim_token: str,
+        lease_seconds: int,
+    ) -> bool:
+        renew_calls.append(
+            {
+                "session": current_session,
+                "workspace_id": workspace_id,
+                "run_id": run_id,
+                "claim_token": claim_token,
+                "lease_seconds": lease_seconds,
+            }
+        )
+        heartbeat_seen.set()
+        return True
+
+    def fake_execute_claimed_run(
+        current_session: FakeSession,
+        *,
+        workspace_id: object,
+        run_id: str,
+        claim_token: str,
+        llm_client: object,
+        embedding_client: object,
+    ) -> SimpleNamespace:
+        assert heartbeat_seen.wait(2)
+        calls.append(
+            {
+                "action": "execute",
+                "session": current_session,
+                "claim_committed": claimed_session["session"].committed,
+                "workspace_id": workspace_id,
+                "run_id": run_id,
+                "claim_token": claim_token,
+                "llm_client": llm_client,
+                "embedding_client": embedding_client,
+            }
+        )
         return SimpleNamespace(id="run-1", status="succeeded")
 
-    monkeypatch.setattr(worker_main, "execute_next_queued_run", fake_execute_next_queued_run)
+    def fake_execute_next_queued_run(*args: object, **kwargs: object) -> None:
+        raise AssertionError("run_worker_once should commit the claim before executing it")
+
+    monkeypatch.setattr(worker_main, "claim_next_queued_run", fake_claim_next_queued_run, raising=False)
+    monkeypatch.setattr(worker_main, "renew_run_lease", fake_renew_run_lease, raising=False)
+    monkeypatch.setattr(worker_main, "execute_claimed_run", fake_execute_claimed_run, raising=False)
+    monkeypatch.setattr(worker_main, "execute_next_queued_run", fake_execute_next_queued_run, raising=False)
     logger = FakeLogger()
 
     result = worker_main.run_worker_once(
@@ -69,19 +123,44 @@ def test_run_worker_once_passes_configured_claim_options(monkeypatch):
         logger=logger,
     )
 
+    claim_session = calls[0]["session"]
+    execute_session = calls[1]["session"]
+    renew_session = renew_calls[0]["session"]
     assert result is not None
     assert calls == [
         {
-            "session": session,
+            "action": "claim",
+            "session": claim_session,
             "workspace_id": None,
+            "worker_id": "worker-east-1",
+            "lease_seconds": 90,
+        },
+        {
+            "action": "execute",
+            "session": execute_session,
+            "claim_committed": True,
+            "workspace_id": "workspace-1",
+            "run_id": "run-1",
+            "claim_token": "claim-token-1",
             "llm_client": llm_client,
             "embedding_client": embedding_client,
-            "worker_id": "worker-east-1",
+        },
+    ]
+    assert renew_calls == [
+        {
+            "session": renew_session,
+            "workspace_id": "workspace-1",
+            "run_id": "run-1",
+            "claim_token": "claim-token-1",
             "lease_seconds": 90,
         }
     ]
-    assert session.committed is True
-    assert session.closed is True
+    assert claim_session.committed is True
+    assert claim_session.closed is True
+    assert renew_session.committed is True
+    assert renew_session.closed is True
+    assert execute_session.committed is True
+    assert execute_session.closed is True
     assert logger.infos == [("Executed queued run", {"run_id": "run-1", "status": "succeeded"})]
 
 

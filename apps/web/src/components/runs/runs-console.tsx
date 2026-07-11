@@ -6,11 +6,14 @@ import {
   type Approval,
   type WorkflowRun,
   approveApproval,
+  cancelRun,
+  canCancelRunStatus,
   executeRun,
   fetchApprovals,
   fetchRun,
   fetchRuns,
   formatRunCostSummary,
+  formatRunRuntimeSummary,
   rejectApproval,
   shouldPollRunStatus,
 } from "@/lib/workflows";
@@ -32,7 +35,15 @@ export function RunsConsole() {
     () => (detail ? formatRunCostSummary(detail) : { totalTokens: 0, promptTokens: 0, completionTokens: 0, totalLatencyMs: 0 }),
     [detail],
   );
+  const runRuntime = useMemo(
+    () =>
+      detail
+        ? formatRunRuntimeSummary(detail)
+        : { worker: "Unclaimed", leaseExpiresAt: "No active lease", checkpoint: "None" },
+    [detail],
+  );
   const selectedRunApprovals = detail?.approvals.filter((approval) => approval.status === "pending") ?? [];
+  const canCancelSelectedRun = detail ? canCancelRunStatus(detail.status) : selectedRun ? canCancelRunStatus(selectedRun.status) : false;
   const hasPollingRun = useMemo(
     () => runs.some((run) => shouldPollRunStatus(run.status)) || (detail ? shouldPollRunStatus(detail.status) : false),
     [detail, runs],
@@ -101,6 +112,21 @@ export function RunsConsole() {
     await runAction(async () => {
       const run = await executeRun(selectedRunId);
       setDetail(run);
+      setMessage(`Run ${run.status}`);
+      const [nextRuns, approvals] = await Promise.all([fetchRuns(), fetchApprovals("pending")]);
+      setRuns(nextRuns);
+      setPendingApprovals(approvals);
+    });
+  }
+
+  async function handleCancel() {
+    if (!selectedRunId) {
+      return;
+    }
+    await runAction(async () => {
+      const run = await cancelRun(selectedRunId, "Cancelled from the Runs console.");
+      setDetail(run);
+      setSelectedRunId(run.id);
       setMessage(`Run ${run.status}`);
       const [nextRuns, approvals] = await Promise.all([fetchRuns(), fetchApprovals("pending")]);
       setRuns(nextRuns);
@@ -204,18 +230,32 @@ export function RunsConsole() {
                   {detail ? `${detail.status} · ${detail.workflow_version_id}` : "No run selected"}
                 </p>
               </div>
-              <button className="control-button primary" disabled={busy || !selectedRunId} onClick={handleExecute} type="button">
-                Execute
-              </button>
+              <div className="flex flex-wrap gap-2">
+                {canCancelSelectedRun ? (
+                  <button className="control-button" disabled={busy || !selectedRunId} onClick={handleCancel} type="button">
+                    Cancel
+                  </button>
+                ) : null}
+                <button className="control-button primary" disabled={busy || !selectedRunId} onClick={handleExecute} type="button">
+                  Execute
+                </button>
+              </div>
             </div>
 
             {detail ? (
-              <div className="mt-5 grid gap-4 lg:grid-cols-4">
-                <Metric label="Status" value={detail.status} />
-                <Metric label="Steps" value={String(detail.steps.length)} />
-                <Metric label="Tool Calls" value={String(detail.tool_calls.length)} />
-                <Metric label="Tokens" value={String(runCost.totalTokens)} />
-              </div>
+              <>
+                <div className="mt-5 grid gap-4 lg:grid-cols-4">
+                  <Metric label="Status" value={detail.status} />
+                  <Metric label="Steps" value={String(detail.steps.length)} />
+                  <Metric label="Tool Calls" value={String(detail.tool_calls.length)} />
+                  <Metric label="Tokens" value={String(runCost.totalTokens)} />
+                </div>
+                <div className="mt-4 grid gap-3 lg:grid-cols-3">
+                  <RuntimeMetric label="Worker" value={runRuntime.worker} />
+                  <RuntimeMetric label="Checkpoint" value={runRuntime.checkpoint} />
+                  <RuntimeMetric label="Lease Expires" value={runRuntime.leaseExpiresAt} />
+                </div>
+              </>
             ) : null}
 
             {selectedRunApprovals.length ? (
@@ -361,6 +401,15 @@ function Metric({ label, value }: { label: string; value: string }) {
     <div className="rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2">
       <div className="text-xs text-zinc-500">{label}</div>
       <div className="mt-1 text-lg font-semibold text-zinc-950">{value}</div>
+    </div>
+  );
+}
+
+function RuntimeMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md border border-zinc-200 bg-white px-3 py-2">
+      <div className="text-xs text-zinc-500">{label}</div>
+      <div className="mt-1 break-all text-sm font-medium text-zinc-800">{value}</div>
     </div>
   );
 }
