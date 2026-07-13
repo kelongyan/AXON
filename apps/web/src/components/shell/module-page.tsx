@@ -1,3 +1,6 @@
+import { type Tone } from "@/lib/status-label";
+import { GlassCard } from "@/components/ui/glass-card";
+
 type ModulePageProps = {
   title: string;
   eyebrow: string;
@@ -6,33 +9,36 @@ type ModulePageProps = {
   rows: Array<{
     label: string;
     value: string;
-    tone: "neutral" | "ready" | "pending";
+    tone: Tone;
   }>;
 };
 
-const toneClassName = {
-  neutral: "border-zinc-200 bg-white text-zinc-700",
-  ready: "border-emerald-200 bg-emerald-50 text-emerald-700",
-  pending: "border-amber-200 bg-amber-50 text-amber-700",
+const rowToneClass: Record<Tone, string> = {
+  ready: "border-success/30 bg-success/10 text-success",
+  success: "border-success/30 bg-success/10 text-success",
+  warning: "border-warning/30 bg-warning/10 text-warning",
+  danger: "border-danger/30 bg-danger/10 text-danger",
+  info: "border-info/30 bg-info/10 text-info",
+  neutral: "border-line bg-surface-solid text-ink-2",
 };
 
 export function ModulePage({ title, eyebrow, metricLabel, metricValue, rows }: ModulePageProps) {
   return (
     <div className="space-y-6">
-      <section className="border-b border-zinc-200 pb-5">
-        <p className="text-xs font-semibold uppercase tracking-normal text-teal-700">{eyebrow}</p>
-        <h1 className="mt-2 text-2xl font-semibold text-zinc-950">{title}</h1>
+      <section className="border-b border-line pb-5">
+        <p className="text-xs font-semibold uppercase tracking-wide text-accent">{eyebrow}</p>
+        <h1 className="mt-2 text-2xl font-semibold text-ink">{title}</h1>
       </section>
 
       <section className="grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(280px,360px)]">
-        <div className="rounded-lg border border-zinc-200 bg-white p-5">
-          <div className="text-sm text-zinc-500">{metricLabel}</div>
-          <div className="mt-3 text-4xl font-semibold text-zinc-950">{metricValue}</div>
-        </div>
+        <GlassCard className="p-5">
+          <div className="text-sm text-ink-3">{metricLabel}</div>
+          <div className="mt-3 text-4xl font-semibold text-ink">{metricValue}</div>
+        </GlassCard>
         <div className="space-y-2">
           {rows.map((row) => (
             <div
-              className={`flex items-center justify-between rounded-md border px-3 py-2 text-sm ${toneClassName[row.tone]}`}
+              className={`flex items-center justify-between rounded-xl border px-3 py-2 text-sm ${rowToneClass[row.tone]}`}
               key={row.label}
             >
               <span>{row.label}</span>
@@ -44,4 +50,3 @@ export function ModulePage({ title, eyebrow, metricLabel, metricValue, rows }: M
     </div>
   );
 }
-

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import type { ReactNode } from "react";
 
 import {
   type Approval,
@@ -17,15 +18,40 @@ import {
   rejectApproval,
   shouldPollRunStatus,
 } from "@/lib/workflows";
+import { errorMessage } from "@/lib/error-message";
+import { statusLabel, statusTone } from "@/lib/status-label";
+import { useRunAction } from "@/lib/use-run-action";
+import { Button } from "@/components/ui/button";
+import { GlassCard } from "@/components/ui/glass-card";
+import { MessageBanner } from "@/components/ui/message-banner";
+import { StatusPill } from "@/components/ui/status-pill";
+
+function statusTextClass(status: string): string {
+  switch (statusTone(status)) {
+    case "success":
+      return "text-success";
+    case "warning":
+      return "text-warning";
+    case "danger":
+      return "text-danger";
+    case "info":
+      return "text-info";
+    default:
+      return "text-ink-2";
+  }
+}
+
+function shortId(value: string): string {
+  return value.slice(0, 8);
+}
 
 export function RunsConsole() {
   const [runs, setRuns] = useState<WorkflowRun[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [detail, setDetail] = useState<WorkflowRun | null>(null);
   const [pendingApprovals, setPendingApprovals] = useState<Approval[]>([]);
-  const [approvalComment, setApprovalComment] = useState("Reviewed for Phase 6 smoke.");
-  const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
+  const [approvalComment, setApprovalComment] = useState("阶段 6 冒烟测试评审意见。");
+  const { busy, message, run, setMessage } = useRunAction();
 
   const selectedRun = useMemo(
     () => runs.find((run) => run.id === selectedRunId) ?? null,
@@ -72,7 +98,7 @@ export function RunsConsole() {
   }, [hasPollingRun, selectedRunId]);
 
   async function loadRuns() {
-    await runAction(async () => {
+    await run(async () => {
       const [nextRuns, approvals] = await Promise.all([fetchRuns(), fetchApprovals("pending")]);
       setRuns(nextRuns);
       setPendingApprovals(approvals);
@@ -109,10 +135,10 @@ export function RunsConsole() {
     if (!selectedRunId) {
       return;
     }
-    await runAction(async () => {
+    await run(async () => {
       const run = await executeRun(selectedRunId);
       setDetail(run);
-      setMessage(`Run ${run.status}`);
+      setMessage(`运行 ${statusLabel(run.status)}`);
       const [nextRuns, approvals] = await Promise.all([fetchRuns(), fetchApprovals("pending")]);
       setRuns(nextRuns);
       setPendingApprovals(approvals);
@@ -123,11 +149,11 @@ export function RunsConsole() {
     if (!selectedRunId) {
       return;
     }
-    await runAction(async () => {
+    await run(async () => {
       const run = await cancelRun(selectedRunId, "Cancelled from the Runs console.");
       setDetail(run);
       setSelectedRunId(run.id);
-      setMessage(`Run ${run.status}`);
+      setMessage(`运行 ${statusLabel(run.status)}`);
       const [nextRuns, approvals] = await Promise.all([fetchRuns(), fetchApprovals("pending")]);
       setRuns(nextRuns);
       setPendingApprovals(approvals);
@@ -135,74 +161,60 @@ export function RunsConsole() {
   }
 
   async function decideApproval(approvalId: string, decision: "approve" | "reject") {
-    await runAction(async () => {
+    await run(async () => {
       const run =
         decision === "approve"
           ? await approveApproval(approvalId, approvalComment)
           : await rejectApproval(approvalId, approvalComment);
       setDetail(run);
       setSelectedRunId(run.id);
-      setMessage(`Approval ${decision}d; run ${run.status}`);
+      setMessage(`审批${decision === "approve" ? "通过" : "驳回"}；运行 ${statusLabel(run.status)}`);
       const [nextRuns, approvals] = await Promise.all([fetchRuns(), fetchApprovals("pending")]);
       setRuns(nextRuns);
       setPendingApprovals(approvals);
     });
   }
 
-  async function runAction(action: () => Promise<void>) {
-    try {
-      setBusy(true);
-      setMessage(null);
-      await action();
-    } catch (error) {
-      setMessage(errorMessage(error));
-    } finally {
-      setBusy(false);
-    }
-  }
-
   return (
     <div className="space-y-6">
-      <section className="border-b border-zinc-200 pb-5">
-        <p className="text-xs font-semibold uppercase tracking-normal text-teal-700">Execution Trace</p>
+      <section className="border-b border-line pb-5">
+        <p className="text-xs font-semibold uppercase tracking-wide text-accent">执行链路追踪</p>
         <div className="mt-2 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
           <div>
-            <h1 className="text-2xl font-semibold text-zinc-950">Runs</h1>
-            <p className="mt-1 text-sm text-zinc-500">Inspect workflow execution, steps, model/tool calls, and trace events.</p>
+            <h1 className="text-2xl font-semibold text-ink">运行记录</h1>
+            <p className="mt-1 text-sm text-ink-3">查看工作流执行过程、步骤、模型/工具调用与链路事件。</p>
           </div>
           <div className="flex flex-wrap gap-2 text-xs">
-            <StatusPill label="Runs" value={String(runs.length)} tone="neutral" />
-            <StatusPill label="Approvals" value={String(pendingApprovals.length)} tone={pendingApprovals.length ? "warn" : "ready"} />
-            <StatusPill label="Trace" value="Phase 6" tone="ready" />
+            <StatusPill label="运行记录" value={String(runs.length)} tone="neutral" />
+            <StatusPill label="待审批" value={String(pendingApprovals.length)} tone={pendingApprovals.length ? "warning" : "success"} />
+            <StatusPill label="链路" value="Phase 6" tone="success" />
           </div>
         </div>
       </section>
 
-      {message ? (
-        <div className="rounded-md border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-700">{message}</div>
-      ) : null}
+      {message ? <MessageBanner message={message} /> : null}
 
       <section className="grid gap-5 xl:grid-cols-[340px_minmax(0,1fr)]">
-        <div className="rounded-lg border border-zinc-200 bg-white">
-          <div className="flex items-center justify-between gap-3 border-b border-zinc-200 px-4 py-3">
+        <GlassCard className="overflow-hidden">
+          <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3">
             <div>
-              <div className="text-sm font-semibold text-zinc-950">Run List</div>
-              <div className="mt-1 text-xs text-zinc-500">{runs.length} recent runs</div>
+              <div className="text-sm font-semibold text-ink">运行列表</div>
+              <div className="mt-1 text-xs text-ink-3">{runs.length} 条近期运行</div>
             </div>
-            <button className="control-button" disabled={busy} onClick={() => void loadRuns()} type="button">
-              Refresh
-            </button>
+            <Button variant="default" disabled={busy} onClick={() => void loadRuns()} type="button">
+              刷新
+            </Button>
           </div>
           <div className="max-h-[720px] overflow-auto p-2">
             {runs.length === 0 ? (
-              <div className="px-3 py-6 text-sm text-zinc-500">No runs yet</div>
+              <div className="px-3 py-6 text-sm text-ink-3">暂无运行记录</div>
             ) : (
               runs.map((run) => (
                 <button
-                  className={`mb-2 w-full rounded-md border px-3 py-3 text-left transition ${
+                  className={`mb-2 w-full rounded-xl border px-3 py-3 text-left transition ${
                     selectedRunId === run.id
-                      ? "border-teal-500 bg-teal-50 text-teal-950"
-                      : "border-zinc-200 bg-white text-zinc-700 hover:border-zinc-300 hover:bg-zinc-50"
+                      ? "border-accent bg-accent/10 text-accent"
+                      : "border-line bg-surface-solid text-ink-2 hover:border-line-strong hover:bg-elevated"
                   }`}
                   key={run.id}
                   onClick={() => setSelectedRunId(run.id)}
@@ -210,175 +222,185 @@ export function RunsConsole() {
                 >
                   <div className="flex items-center justify-between gap-3">
                     <span className="text-sm font-medium">{shortId(run.id)}</span>
-                    <span className={`text-xs ${statusClass(run.status)}`}>{run.status}</span>
+                    <span className={`text-xs ${statusTextClass(run.status)}`}>{statusLabel(run.status)}</span>
                   </div>
-                  <div className="mt-1 truncate text-xs text-zinc-500">
+                  <div className="mt-1 truncate text-xs text-ink-3">
                     {String(run.input.topic ?? "No topic")} · {run.steps.length} steps
                   </div>
                 </button>
               ))
             )}
           </div>
-        </div>
+        </GlassCard>
 
         <div className="space-y-5">
-          <section className="rounded-lg border border-zinc-200 bg-white p-5">
-            <div className="flex flex-col gap-3 border-b border-zinc-200 pb-4 md:flex-row md:items-center md:justify-between">
+          <GlassCard className="p-5">
+            <div className="flex flex-col gap-3 border-b border-line pb-4 md:flex-row md:items-center md:justify-between">
               <div>
-                <h2 className="text-base font-semibold text-zinc-950">{selectedRun ? shortId(selectedRun.id) : "Select a run"}</h2>
-                <p className="mt-1 text-sm text-zinc-500">
-                  {detail ? `${detail.status} · ${detail.workflow_version_id}` : "No run selected"}
+                <h2 className="text-base font-semibold text-ink">{selectedRun ? shortId(selectedRun.id) : "请选择运行"}</h2>
+                <p className="mt-1 text-sm text-ink-3">
+                  {detail ? `${statusLabel(detail.status)} · ${detail.workflow_version_id}` : "未选择运行"}
                 </p>
               </div>
               <div className="flex flex-wrap gap-2">
                 {canCancelSelectedRun ? (
-                  <button className="control-button" disabled={busy || !selectedRunId} onClick={handleCancel} type="button">
-                    Cancel
-                  </button>
+                  <Button variant="default" disabled={busy || !selectedRunId} onClick={handleCancel} type="button">
+                    取消
+                  </Button>
                 ) : null}
-                <button className="control-button primary" disabled={busy || !selectedRunId} onClick={handleExecute} type="button">
-                  Execute
-                </button>
+                <Button variant="primary" disabled={busy || !selectedRunId} onClick={handleExecute} type="button">
+                  执行
+                </Button>
               </div>
             </div>
 
             {detail ? (
               <>
                 <div className="mt-5 grid gap-4 lg:grid-cols-4">
-                  <Metric label="Status" value={detail.status} />
-                  <Metric label="Steps" value={String(detail.steps.length)} />
-                  <Metric label="Tool Calls" value={String(detail.tool_calls.length)} />
-                  <Metric label="Tokens" value={String(runCost.totalTokens)} />
+                  <Metric label="状态" value={statusLabel(detail.status)} />
+                  <Metric label="步骤" value={String(detail.steps.length)} />
+                  <Metric label="工具调用" value={String(detail.tool_calls.length)} />
+                  <Metric label="Token" value={String(runCost.totalTokens)} />
                 </div>
                 <div className="mt-4 grid gap-3 lg:grid-cols-3">
-                  <RuntimeMetric label="Worker" value={runRuntime.worker} />
-                  <RuntimeMetric label="Checkpoint" value={runRuntime.checkpoint} />
-                  <RuntimeMetric label="Lease Expires" value={runRuntime.leaseExpiresAt} />
+                  <RuntimeMetric label="执行节点" value={runRuntime.worker} />
+                  <RuntimeMetric label="检查点" value={runRuntime.checkpoint} />
+                  <RuntimeMetric label="租约过期" value={runRuntime.leaseExpiresAt} />
                 </div>
               </>
             ) : null}
 
             {selectedRunApprovals.length ? (
-              <div className="mt-5 rounded-md border border-amber-200 bg-amber-50 p-4">
+              <div className="mt-5 rounded-xl border border-warning/30 bg-warning/10 p-4">
                 <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                   <div>
-                    <h3 className="text-sm font-semibold text-amber-950">Pending Approval</h3>
-                    <p className="mt-1 text-sm text-amber-800">{selectedRunApprovals[0].title}</p>
-                    <p className="mt-1 text-xs text-amber-700">{selectedRunApprovals[0].instructions}</p>
+                    <h3 className="text-sm font-semibold text-warning">待审批</h3>
+                    <p className="mt-1 text-sm text-ink-2">{selectedRunApprovals[0].title}</p>
+                    <p className="mt-1 text-xs text-ink-3">{selectedRunApprovals[0].instructions}</p>
                   </div>
-                  <span className="rounded-md border border-amber-300 px-2.5 py-1 text-xs font-semibold text-amber-800">
-                    {selectedRunApprovals[0].risk_level}
+                  <span className="rounded-md border border-warning/40 px-2.5 py-1 text-xs font-semibold text-warning">
+                    {statusLabel(selectedRunApprovals[0].risk_level)}
                   </span>
                 </div>
                 <textarea
-                  className="field-input mt-3 min-h-20 resize-y bg-white"
+                  className="field-input mt-3 min-h-20 resize-y bg-surface-solid"
                   onChange={(event) => setApprovalComment(event.target.value)}
                   value={approvalComment}
                 />
                 <div className="mt-3 flex flex-wrap gap-2">
-                  <button className="control-button primary" disabled={busy} onClick={() => void decideApproval(selectedRunApprovals[0].id, "approve")} type="button">
-                    Approve
-                  </button>
-                  <button className="control-button" disabled={busy} onClick={() => void decideApproval(selectedRunApprovals[0].id, "reject")} type="button">
-                    Reject
-                  </button>
+                  <Button
+                    variant="primary"
+                    disabled={busy}
+                    onClick={() => void decideApproval(selectedRunApprovals[0].id, "approve")}
+                    type="button"
+                  >
+                    通过
+                  </Button>
+                  <Button
+                    variant="default"
+                    disabled={busy}
+                    onClick={() => void decideApproval(selectedRunApprovals[0].id, "reject")}
+                    type="button"
+                  >
+                    驳回
+                  </Button>
                 </div>
               </div>
             ) : null}
 
             <div className="mt-5">
-              <h3 className="text-sm font-semibold text-zinc-950">Output</h3>
-              <pre className="mt-3 max-h-72 overflow-auto rounded-md border border-zinc-200 bg-zinc-50 p-3 text-sm text-zinc-700">
-                {detail ? JSON.stringify(detail.output ?? detail.error_message ?? detail.input, null, 2) : "Select a run"}
+              <h3 className="text-sm font-semibold text-ink">输出</h3>
+              <pre className="mt-3 max-h-72 overflow-auto rounded-xl border border-line bg-surface-solid p-3 text-sm text-ink-2">
+                {detail ? JSON.stringify(detail.output ?? detail.error_message ?? detail.input, null, 2) : "请选择运行"}
               </pre>
             </div>
-          </section>
+          </GlassCard>
 
           <section className="grid gap-5 xl:grid-cols-2">
-            <Panel title="Step Timeline">
+            <Panel title="步骤时间线">
               {detail?.steps.length ? (
                 detail.steps.map((step) => (
-                  <div className="rounded-md border border-zinc-200 px-3 py-2 text-sm" key={step.id}>
+                  <div className="rounded-xl border border-line px-3 py-2 text-sm" key={step.id}>
                     <div className="flex items-center justify-between gap-3">
-                      <span className="font-medium text-zinc-800">{step.node_name}</span>
-                      <span className={`text-xs ${statusClass(step.status)}`}>{step.status}</span>
+                      <span className="font-medium text-ink-2">{step.node_name}</span>
+                      <span className={`text-xs ${statusTextClass(step.status)}`}>{statusLabel(step.status)}</span>
                     </div>
-                    <div className="mt-1 text-xs text-zinc-500">
-                      {step.node_type} · attempt {step.attempt}
+                    <div className="mt-1 text-xs text-ink-3">
+                      {statusLabel(step.node_type)} · 第 {step.attempt} 次尝试
                     </div>
-                    {step.error_message ? <div className="mt-1 text-xs text-rose-700">{step.error_message}</div> : null}
+                    {step.error_message ? <div className="mt-1 text-xs text-danger">{step.error_message}</div> : null}
                   </div>
                 ))
               ) : (
-                <div className="text-sm text-zinc-500">No steps yet</div>
+                <div className="text-sm text-ink-3">暂无步骤</div>
               )}
             </Panel>
 
-            <Panel title="LLM Calls & Cost">
+            <Panel title="LLM 调用与成本">
               {detail ? (
-                <div className="rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm">
-                  <div className="font-medium text-zinc-800">Token Summary</div>
-                  <div className="mt-1 text-xs text-zinc-500">
-                    prompt {runCost.promptTokens} · completion {runCost.completionTokens} · latency {runCost.totalLatencyMs} ms
+                <div className="rounded-xl border border-line bg-surface-solid px-3 py-2 text-sm">
+                  <div className="font-medium text-ink-2">Token 汇总</div>
+                  <div className="mt-1 text-xs text-ink-3">
+                    输入 {runCost.promptTokens} · 输出 {runCost.completionTokens} · 耗时 {runCost.totalLatencyMs} ms
                   </div>
                 </div>
               ) : null}
               {detail?.llm_calls.length ? (
                 detail.llm_calls.map((call) => (
-                  <div className="rounded-md border border-zinc-200 px-3 py-2 text-sm" key={call.id}>
+                  <div className="rounded-xl border border-line px-3 py-2 text-sm" key={call.id}>
                     <div className="flex items-center justify-between gap-3">
-                      <span className="font-medium text-zinc-800">{call.model}</span>
-                      <span className={`text-xs ${statusClass(call.status)}`}>{call.status}</span>
+                      <span className="font-medium text-ink-2">{call.model}</span>
+                      <span className={`text-xs ${statusTextClass(call.status)}`}>{statusLabel(call.status)}</span>
                     </div>
-                    <div className="mt-1 text-xs text-zinc-500">
+                    <div className="mt-1 text-xs text-ink-3">
                       {call.total_tokens ?? 0} tokens · {call.latency_ms} ms
                     </div>
-                    {call.error_message ? <div className="mt-1 text-xs text-rose-700">{call.error_message}</div> : null}
+                    {call.error_message ? <div className="mt-1 text-xs text-danger">{call.error_message}</div> : null}
                   </div>
                 ))
               ) : (
-                <div className="text-sm text-zinc-500">No LLM calls yet</div>
+                <div className="text-sm text-ink-3">暂无 LLM 调用</div>
               )}
             </Panel>
 
-            <Panel title="Tool Calls">
+            <Panel title="工具调用">
               {detail?.tool_calls.length ? (
                 detail.tool_calls.map((call) => (
-                  <div className="rounded-md border border-zinc-200 px-3 py-2 text-sm" key={call.id}>
+                  <div className="rounded-xl border border-line px-3 py-2 text-sm" key={call.id}>
                     <div className="flex items-center justify-between gap-3">
-                      <span className="font-medium text-zinc-800">{call.tool_name}</span>
-                      <span className={`text-xs ${statusClass(call.status)}`}>{call.status}</span>
+                      <span className="font-medium text-ink-2">{call.tool_name}</span>
+                      <span className={`text-xs ${statusTextClass(call.status)}`}>{statusLabel(call.status)}</span>
                     </div>
-                    <div className="mt-1 text-xs text-zinc-500">
-                      {call.risk_level} · {call.latency_ms} ms
+                    <div className="mt-1 text-xs text-ink-3">
+                      {statusLabel(call.risk_level)} · {call.latency_ms} ms
                     </div>
-                    {call.error_message ? <div className="mt-1 text-xs text-rose-700">{call.error_message}</div> : null}
+                    {call.error_message ? <div className="mt-1 text-xs text-danger">{call.error_message}</div> : null}
                   </div>
                 ))
               ) : (
-                <div className="text-sm text-zinc-500">No tool calls yet</div>
+                <div className="text-sm text-ink-3">暂无工具调用</div>
               )}
             </Panel>
           </section>
 
-          <Panel title="Trace Events">
+          <Panel title="链路事件">
             {detail?.trace_events.length ? (
               detail.trace_events.map((event) => (
-                <div className="rounded-md border border-zinc-200 px-3 py-2 text-sm" key={event.id}>
+                <div className="rounded-xl border border-line px-3 py-2 text-sm" key={event.id}>
                   <div className="flex items-center justify-between gap-3">
-                    <span className="font-medium text-zinc-800">{event.event_type}</span>
-                    <span className={event.severity === "error" ? "text-xs text-rose-700" : "text-xs text-zinc-500"}>
+                    <span className="font-medium text-ink-2">{event.event_type}</span>
+                    <span className={event.severity === "error" ? "text-xs text-danger" : "text-xs text-ink-3"}>
                       {event.actor_type}
                     </span>
                   </div>
-                  <div className="mt-1 text-xs text-zinc-500">{event.message}</div>
-                  <pre className="mt-2 max-h-28 overflow-auto rounded bg-zinc-50 p-2 text-[11px] text-zinc-600">
+                  <div className="mt-1 text-xs text-ink-3">{event.message}</div>
+                  <pre className="mt-2 max-h-28 overflow-auto rounded-lg bg-surface-solid p-2 text-[11px] text-ink-3">
                     {JSON.stringify(event.payload, null, 2)}
                   </pre>
                 </div>
               ))
             ) : (
-              <div className="text-sm text-zinc-500">No trace events yet</div>
+              <div className="text-sm text-ink-3">暂无链路事件</div>
             )}
           </Panel>
         </div>
@@ -387,72 +409,29 @@ export function RunsConsole() {
   );
 }
 
-function Panel({ children, title }: { children: React.ReactNode; title: string }) {
+function Panel({ children, title }: { children: ReactNode; title: string }) {
   return (
-    <section className="rounded-lg border border-zinc-200 bg-white p-4">
-      <h2 className="text-base font-semibold text-zinc-950">{title}</h2>
+    <GlassCard className="p-4">
+      <h2 className="text-base font-semibold text-ink">{title}</h2>
       <div className="mt-4 max-h-[420px] space-y-2 overflow-auto">{children}</div>
-    </section>
+    </GlassCard>
   );
 }
 
 function Metric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2">
-      <div className="text-xs text-zinc-500">{label}</div>
-      <div className="mt-1 text-lg font-semibold text-zinc-950">{value}</div>
+    <div className="rounded-xl border border-line bg-surface-solid px-3 py-2">
+      <div className="text-xs text-ink-3">{label}</div>
+      <div className="mt-1 text-lg font-semibold text-ink">{value}</div>
     </div>
   );
 }
 
 function RuntimeMetric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-md border border-zinc-200 bg-white px-3 py-2">
-      <div className="text-xs text-zinc-500">{label}</div>
-      <div className="mt-1 break-all text-sm font-medium text-zinc-800">{value}</div>
+    <div className="rounded-xl border border-line bg-surface-solid px-3 py-2">
+      <div className="text-xs text-ink-3">{label}</div>
+      <div className="mt-1 break-all text-sm font-medium text-ink-2">{value}</div>
     </div>
   );
-}
-
-function StatusPill({
-  label,
-  tone,
-  value,
-}: {
-  label: string;
-  tone: "neutral" | "ready" | "warn";
-  value: string;
-}) {
-  const toneClassName =
-    tone === "ready"
-      ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-      : tone === "warn"
-        ? "border-amber-200 bg-amber-50 text-amber-700"
-        : "border-zinc-200 bg-white text-zinc-600";
-  return (
-    <span className={`rounded-md border px-2.5 py-1 font-medium ${toneClassName}`}>
-      {label}: {value}
-    </span>
-  );
-}
-
-function shortId(value: string): string {
-  return value.slice(0, 8);
-}
-
-function statusClass(status: string): string {
-  if (status === "succeeded") {
-    return "text-emerald-700";
-  }
-  if (status === "failed" || status === "blocked") {
-    return "text-rose-700";
-  }
-  if (status === "waiting_approval") {
-    return "text-amber-700";
-  }
-  return "text-amber-700";
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "Request failed";
 }

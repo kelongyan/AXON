@@ -17,6 +17,14 @@ import {
   revokeTool,
   seedBuiltInTools,
 } from "@/lib/tools";
+import { errorMessage } from "@/lib/error-message";
+import { statusLabel } from "@/lib/status-label";
+import { useRunAction } from "@/lib/use-run-action";
+import { Button } from "@/components/ui/button";
+import { Field } from "@/components/ui/field";
+import { GlassCard } from "@/components/ui/glass-card";
+import { MessageBanner } from "@/components/ui/message-banner";
+import { StatusPill } from "@/components/ui/status-pill";
 
 const defaultInput = JSON.stringify(
   {
@@ -35,8 +43,7 @@ export function ToolsConsole() {
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [inputText, setInputText] = useState(defaultInput);
   const [invokeResult, setInvokeResult] = useState<ToolInvokeResult | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
+  const { busy, message, run, setBusy, setMessage } = useRunAction();
 
   const selectedTool = useMemo(
     () => tools.find((tool) => tool.id === selectedToolId) ?? null,
@@ -57,7 +64,7 @@ export function ToolsConsole() {
         JSON.stringify(
           {
             title: "Phase 2",
-            sections: [{ heading: "Summary", content: "Tool Registry works." }],
+            sections: [{ heading: "Summary", content: "工具注册表可用。" }],
           },
           null,
           2,
@@ -71,7 +78,7 @@ export function ToolsConsole() {
   }, [selectedTool?.name]);
 
   async function loadInitialData() {
-    await runAction(async () => {
+    await run(async () => {
       const [nextTools, nextAgents, nextCalls] = await Promise.all([fetchTools(), fetchAgents(), fetchToolCalls()]);
       setTools(nextTools);
       setAgents(nextAgents);
@@ -82,11 +89,11 @@ export function ToolsConsole() {
   }
 
   async function handleSeed() {
-    await runAction(async () => {
+    await run(async () => {
       const result = await seedBuiltInTools();
       setTools(result.items);
       setSelectedToolId(result.items[0]?.id ?? null);
-      setMessage(`Seeded built-ins: ${result.created} created, ${result.updated} updated`);
+      setMessage(`已初始化内置工具：${result.created} 个已创建，${result.updated} 个已更新`);
     });
   }
 
@@ -94,9 +101,9 @@ export function ToolsConsole() {
     if (!selectedAgent || !selectedTool) {
       return;
     }
-    await runAction(async () => {
+    await run(async () => {
       await grantTool(selectedAgent.id, selectedTool.id);
-      setMessage(`Granted ${buildGrantLabel(selectedAgent.name, selectedTool.display_name)}`);
+      setMessage(`已授权 ${buildGrantLabel(selectedAgent.name, selectedTool.display_name)}`);
     });
   }
 
@@ -104,9 +111,9 @@ export function ToolsConsole() {
     if (!selectedAgent || !selectedTool) {
       return;
     }
-    await runAction(async () => {
+    await run(async () => {
       await revokeTool(selectedAgent.id, selectedTool.id);
-      setMessage(`Revoked ${buildGrantLabel(selectedAgent.name, selectedTool.display_name)}`);
+      setMessage(`已撤销 ${buildGrantLabel(selectedAgent.name, selectedTool.display_name)}`);
     });
   }
 
@@ -114,20 +121,14 @@ export function ToolsConsole() {
     if (!selectedAgent || !selectedTool) {
       return;
     }
-    await runAction(async () => {
+    setBusy(true);
+    setMessage(null);
+    try {
       const input = parseToolInput(inputText);
       const result = await invokeTool(selectedTool.id, selectedAgent.id, input);
       setInvokeResult(result);
       setCalls(await fetchToolCalls());
-      setMessage(`Tool call ${result.status}`);
-    });
-  }
-
-  async function runAction(action: () => Promise<void>) {
-    try {
-      setBusy(true);
-      setMessage(null);
-      await action();
+      setMessage(`工具调用 ${statusLabel(result.status)}`);
     } catch (error) {
       setMessage(errorMessage(error));
       setCalls(await fetchToolCalls().catch(() => calls));
@@ -138,48 +139,44 @@ export function ToolsConsole() {
 
   return (
     <div className="space-y-6">
-      <section className="border-b border-zinc-200 pb-5">
-        <p className="text-xs font-semibold uppercase tracking-normal text-teal-700">Tool Registry</p>
+      <section className="border-b border-line pb-5">
+        <p className="text-xs font-semibold uppercase tracking-wide text-accent">工具注册表</p>
         <div className="mt-2 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
           <div>
-            <h1 className="text-2xl font-semibold text-zinc-950">Tools</h1>
-            <p className="mt-1 text-sm text-zinc-500">
-              Register, authorize, test, and audit guarded tool calls.
-            </p>
+            <h1 className="text-2xl font-semibold text-ink">工具</h1>
+            <p className="mt-1 text-sm text-ink-3">注册、授权、测试并审计受管控的工具调用。</p>
           </div>
           <div className="flex flex-wrap gap-2 text-xs">
-            <StatusPill label="Phase" value="2" tone="ready" />
-            <StatusPill label="Approval" value="Blocked" tone="pending" />
-            <StatusPill label="Audit" value="On" tone="ready" />
+            <StatusPill label="阶段" value="2" tone="success" />
+            <StatusPill label="审批" value="已拦截" tone="warning" />
+            <StatusPill label="审计" value="开启" tone="success" />
           </div>
         </div>
       </section>
 
-      {message ? (
-        <div className="rounded-md border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-700">{message}</div>
-      ) : null}
+      {message ? <MessageBanner message={message} /> : null}
 
       <section className="grid gap-5 xl:grid-cols-[300px_minmax(0,1fr)] 2xl:grid-cols-[300px_minmax(0,1fr)_380px]">
-        <div className="rounded-lg border border-zinc-200 bg-white">
-          <div className="flex items-center justify-between gap-3 border-b border-zinc-200 px-4 py-3">
+        <GlassCard className="overflow-hidden">
+          <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3">
             <div>
-              <div className="text-sm font-semibold text-zinc-950">Registry</div>
-              <div className="mt-1 text-xs text-zinc-500">{tools.length} tools</div>
+              <div className="text-sm font-semibold text-ink">注册表</div>
+              <div className="mt-1 text-xs text-ink-3">{tools.length} 个工具</div>
             </div>
-            <button className="control-button primary" disabled={busy} onClick={handleSeed} type="button">
-              Seed
-            </button>
+            <Button variant="primary" disabled={busy} onClick={handleSeed} type="button">
+              初始化
+            </Button>
           </div>
           <div className="max-h-[680px] overflow-auto p-2">
             {tools.length === 0 ? (
-              <div className="px-3 py-6 text-sm text-zinc-500">Seed built-ins to start</div>
+              <div className="px-3 py-6 text-sm text-ink-3">请先初始化内置工具</div>
             ) : (
               tools.map((tool) => (
                 <button
-                  className={`mb-2 w-full rounded-md border px-3 py-3 text-left transition ${
+                  className={`mb-2 w-full rounded-xl border px-3 py-3 text-left transition ${
                     selectedToolId === tool.id
-                      ? "border-teal-500 bg-teal-50 text-teal-950"
-                      : "border-zinc-200 bg-white text-zinc-700 hover:border-zinc-300 hover:bg-zinc-50"
+                      ? "border-accent bg-accent/10 text-accent"
+                      : "border-line bg-surface-solid text-ink-2 hover:border-line-strong hover:bg-elevated"
                   }`}
                   key={tool.id}
                   onClick={() => setSelectedToolId(tool.id)}
@@ -187,42 +184,46 @@ export function ToolsConsole() {
                 >
                   <div className="flex items-center justify-between gap-3">
                     <span className="text-sm font-medium">{tool.display_name}</span>
-                    <span className="text-xs">{tool.status}</span>
+                    <span className="text-xs">{statusLabel(tool.status)}</span>
                   </div>
-                  <div className="mt-1 text-xs text-zinc-500">
-                    {tool.name} · {tool.risk_level}
+                  <div className="mt-1 text-xs text-ink-3">
+                    {tool.name} · {statusLabel(tool.risk_level)}
                   </div>
                 </button>
               ))
             )}
           </div>
-        </div>
+        </GlassCard>
 
         <div className="space-y-5">
-          <section className="rounded-lg border border-zinc-200 bg-white p-5">
-            <div className="flex flex-col gap-3 border-b border-zinc-200 pb-4 md:flex-row md:items-center md:justify-between">
+          <GlassCard className="p-5">
+            <div className="flex flex-col gap-3 border-b border-line pb-4 md:flex-row md:items-center md:justify-between">
               <div>
-                <h2 className="text-base font-semibold text-zinc-950">
-                  {selectedTool?.display_name ?? "Select a tool"}
+                <h2 className="text-base font-semibold text-ink">
+                  {selectedTool?.display_name ?? "请选择工具"}
                 </h2>
-                <p className="mt-1 text-sm text-zinc-500">{selectedTool?.description ?? "No tool selected"}</p>
+                <p className="mt-1 text-sm text-ink-3">{selectedTool?.description ?? "未选择工具"}</p>
               </div>
               {selectedTool ? (
                 <div className="flex flex-wrap gap-2 text-xs">
-                  <StatusPill label="Risk" value={selectedTool.risk_level} tone={selectedTool.requires_approval ? "pending" : "ready"} />
-                  <StatusPill label="Timeout" value={`${selectedTool.timeout_seconds}s`} tone="neutral" />
+                  <StatusPill
+                    label="风险"
+                    value={statusLabel(selectedTool.risk_level)}
+                    tone={selectedTool.requires_approval ? "warning" : "success"}
+                  />
+                  <StatusPill label="超时" value={`${selectedTool.timeout_seconds}s`} tone="neutral" />
                 </div>
               ) : null}
             </div>
 
             <div className="mt-5 grid gap-4 md:grid-cols-2">
-              <Field label="Agent">
+              <Field label="智能体">
                 <select
                   className="field-input"
                   onChange={(event) => setSelectedAgentId(event.target.value || null)}
                   value={selectedAgentId ?? ""}
                 >
-                  <option value="">Select Agent</option>
+                  <option value="">请选择智能体</option>
                   {agents.map((agent) => (
                     <option key={agent.id} value={agent.id}>
                       {agent.name}
@@ -230,17 +231,27 @@ export function ToolsConsole() {
                   ))}
                 </select>
               </Field>
-              <Field label="Authorization">
+              <Field label="授权">
                 <div className="flex gap-2">
-                  <button className="control-button primary" disabled={busy || !selectedAgent || !selectedTool} onClick={handleGrant} type="button">
-                    Grant
-                  </button>
-                  <button className="control-button" disabled={busy || !selectedAgent || !selectedTool} onClick={handleRevoke} type="button">
-                    Revoke
-                  </button>
+                  <Button
+                    variant="primary"
+                    disabled={busy || !selectedAgent || !selectedTool}
+                    onClick={handleGrant}
+                    type="button"
+                  >
+                    授权
+                  </Button>
+                  <Button
+                    variant="default"
+                    disabled={busy || !selectedAgent || !selectedTool}
+                    onClick={handleRevoke}
+                    type="button"
+                  >
+                    撤销
+                  </Button>
                 </div>
               </Field>
-              <Field className="md:col-span-2" label="Input JSON">
+              <Field className="md:col-span-2" label="输入 JSON">
                 <textarea
                   className="field-input min-h-52 resize-y font-mono"
                   onChange={(event) => setInputText(event.target.value)}
@@ -250,103 +261,64 @@ export function ToolsConsole() {
             </div>
 
             <div className="mt-4 flex items-center justify-between gap-3">
-              <div className="text-xs text-zinc-500">
-                High-risk or approval-required tools are blocked and audited in this phase.
-              </div>
-              <button className="control-button primary" disabled={busy || !selectedAgent || !selectedTool} onClick={handleInvoke} type="button">
-                Invoke
-              </button>
+              <div className="text-xs text-ink-3">本阶段中，高风险或需审批的工具将被拦截并记录审计。</div>
+              <Button
+                variant="primary"
+                disabled={busy || !selectedAgent || !selectedTool}
+                onClick={handleInvoke}
+                type="button"
+              >
+                调用
+              </Button>
             </div>
 
             {invokeResult ? (
-              <div className="mt-4 rounded-md border border-emerald-200 bg-emerald-50 p-3">
-                <div className="text-xs font-semibold uppercase tracking-normal text-emerald-700">Output</div>
-                <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap text-sm text-emerald-950">
+              <div className="mt-4 rounded-xl border border-success/30 bg-success/10 p-3">
+                <div className="text-xs font-semibold uppercase tracking-wide text-success">输出</div>
+                <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap text-sm text-ink">
                   {JSON.stringify(invokeResult.output, null, 2)}
                 </pre>
               </div>
             ) : null}
-          </section>
+          </GlassCard>
 
-          <section className="rounded-lg border border-zinc-200 bg-white p-5">
-            <h2 className="text-base font-semibold text-zinc-950">Input Schema</h2>
-            <pre className="mt-3 max-h-80 overflow-auto rounded-md border border-zinc-200 bg-zinc-50 p-3 text-xs text-zinc-700">
+          <GlassCard className="p-5">
+            <h2 className="text-base font-semibold text-ink">输入结构</h2>
+            <pre className="mt-3 max-h-80 overflow-auto rounded-xl border border-line bg-surface-solid p-3 text-xs text-ink-2">
               {selectedTool ? JSON.stringify(selectedTool.input_schema, null, 2) : "{}"}
             </pre>
-          </section>
+          </GlassCard>
         </div>
 
-        <section className="rounded-lg border border-zinc-200 bg-white p-4 xl:col-span-2 2xl:col-span-1">
+        <GlassCard className="p-4 xl:col-span-2 2xl:col-span-1">
           <div className="flex items-center justify-between gap-3">
-            <h2 className="text-base font-semibold text-zinc-950">Tool Calls</h2>
-            <button className="control-button" disabled={busy} onClick={() => void loadInitialData()} type="button">
-              Refresh
-            </button>
+            <h2 className="text-base font-semibold text-ink">工具调用</h2>
+            <Button variant="default" disabled={busy} onClick={() => void loadInitialData()} type="button">
+              刷新
+            </Button>
           </div>
           <div className="mt-4 max-h-[720px] space-y-2 overflow-auto">
             {calls.length ? (
               calls.map((call) => (
-                <div className="rounded-md border border-zinc-200 px-3 py-2 text-sm" key={call.id}>
+                <div className="rounded-xl border border-line px-3 py-2 text-sm" key={call.id}>
                   <div className="flex items-center justify-between gap-3">
-                    <span className="font-medium text-zinc-800">{call.tool_name}</span>
-                    <span className={`text-xs ${call.status === "succeeded" ? "text-emerald-700" : "text-rose-700"}`}>
-                      {call.status}
+                    <span className="font-medium text-ink-2">{call.tool_name}</span>
+                    <span className={call.status === "succeeded" ? "text-xs text-success" : "text-xs text-danger"}>
+                      {statusLabel(call.status)}
                     </span>
                   </div>
-                  <div className="mt-1 text-xs text-zinc-500">
-                    {call.risk_level} · {call.latency_ms} ms
+                  <div className="mt-1 text-xs text-ink-3">
+                    {statusLabel(call.risk_level)} · {call.latency_ms} ms
                   </div>
-                  {call.error_message ? <div className="mt-1 text-xs text-rose-700">{call.error_message}</div> : null}
+                  {call.error_message ? <div className="mt-1 text-xs text-danger">{call.error_message}</div> : null}
                 </div>
               ))
             ) : (
-              <div className="text-sm text-zinc-500">No tool calls yet</div>
+              <div className="text-sm text-ink-3">暂无工具调用记录</div>
             )}
           </div>
-        </section>
+        </GlassCard>
       </section>
     </div>
   );
-}
-
-function Field({
-  children,
-  className = "",
-  label,
-}: {
-  children: ReactNode;
-  className?: string;
-  label: string;
-}) {
-  return (
-    <label className={`block ${className}`}>
-      <span className="text-xs font-semibold uppercase tracking-normal text-zinc-500">{label}</span>
-      <div className="mt-1">{children}</div>
-    </label>
-  );
-}
-
-function StatusPill({
-  label,
-  tone,
-  value,
-}: {
-  label: string;
-  tone: "neutral" | "pending" | "ready";
-  value: string;
-}) {
-  const toneClassName = {
-    neutral: "border-zinc-200 bg-white text-zinc-600",
-    pending: "border-amber-200 bg-amber-50 text-amber-700",
-    ready: "border-emerald-200 bg-emerald-50 text-emerald-700",
-  }[tone];
-  return (
-    <span className={`rounded-md border px-2.5 py-1 font-medium ${toneClassName}`}>
-      {label}: {value}
-    </span>
-  );
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "Request failed";
 }

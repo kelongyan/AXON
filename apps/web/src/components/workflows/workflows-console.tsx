@@ -50,10 +50,18 @@ import {
   parseRunInput,
   publishWorkflowVersion,
 } from "@/lib/workflows";
+import { errorMessage } from "@/lib/error-message";
+import { statusLabel, statusTone, type Tone } from "@/lib/status-label";
+import { useRunAction } from "@/lib/use-run-action";
+import { Button } from "@/components/ui/button";
+import { Field } from "@/components/ui/field";
+import { GlassCard } from "@/components/ui/glass-card";
+import { MessageBanner } from "@/components/ui/message-banner";
+import { StatusPill } from "@/components/ui/status-pill";
 
 const defaultWorkflowForm: WorkflowFormValues = {
-  name: "Visual RAG Workflow",
-  description: "Phase 6 visual workflow builder flow.",
+  name: "可视化 RAG 工作流",
+  description: "阶段 6 可视化工作流编排流程。",
 };
 
 const defaultRunInput = JSON.stringify(
@@ -70,6 +78,15 @@ const nodeTypes: NodeTypes = { workflowNode: WorkflowNodeCard };
 type FlowNode = Node<BuilderNodeData, "workflowNode">;
 type FlowEdge = Edge;
 
+const nodeToneClass: Record<Tone, string> = {
+  ready: "bg-success/10 text-success",
+  neutral: "bg-surface-solid text-ink-2",
+  success: "bg-success/10 text-success",
+  warning: "bg-warning/10 text-warning",
+  danger: "bg-danger/10 text-danger",
+  info: "bg-info/10 text-info",
+};
+
 export function WorkflowsConsole() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
@@ -81,8 +98,7 @@ export function WorkflowsConsole() {
   const [formValues, setFormValues] = useState<WorkflowFormValues>(defaultWorkflowForm);
   const [runInputText, setRunInputText] = useState(defaultRunInput);
   const [lastRun, setLastRun] = useState<WorkflowRun | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
+  const { busy, message, run, setMessage } = useRunAction();
   const [nodes, setNodes, onNodesChange] = useNodesState<FlowNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<FlowEdge>([]);
 
@@ -125,7 +141,7 @@ export function WorkflowsConsole() {
   );
 
   async function loadInitialData() {
-    await runAction(async () => {
+    await run(async () => {
       const [nextAgents, nextWorkflows, nextKnowledgeBases, nextTools] = await Promise.all([
         fetchAgents(),
         fetchWorkflows(),
@@ -174,14 +190,14 @@ export function WorkflowsConsole() {
 
   function loadTemplateGraph(agentVersionId: string | null = selectedAgent?.current_version_id ?? null) {
     if (!agentVersionId) {
-      setMessage("Create an Agent with a published version before loading the template");
+      setMessage("请先创建并发布一个智能体版本，再加载模板");
       return;
     }
     const graph = buildDefaultBuilderGraph(agentVersionId);
     setNodes(graph.nodes as FlowNode[]);
     setEdges(graph.edges as FlowEdge[]);
     setSelectedNodeId(graph.nodes[0]?.id ?? null);
-    setMessage("Loaded visual Start -> Agent -> End template");
+    setMessage("已加载可视化 开始 → 智能体 → 结束 模板");
   }
 
   function addNode(kind: "agent" | "retrieval" | "tool" | "approval" | "end") {
@@ -189,7 +205,7 @@ export function WorkflowsConsole() {
     if (kind === "agent") {
       const agentVersionId = selectedAgent?.current_version_id;
       if (!agentVersionId) {
-        setMessage("Select or create an Agent before adding an Agent node");
+        setMessage("请先选择或创建智能体，再添加智能体节点");
         return;
       }
       const node = buildAgentBuilderNode({
@@ -216,7 +232,7 @@ export function WorkflowsConsole() {
     if (kind === "tool") {
       const selection = selectDefaultToolNodeReferences(agents, tools);
       if (!selection.agentId || !selection.toolId) {
-        setMessage("Create an Agent and seed an active Tool before adding a Tool node");
+        setMessage("请先创建智能体并初始化一个启用中的工具，再添加工具节点");
         return;
       }
       const node = buildToolBuilderNode({
@@ -256,9 +272,9 @@ export function WorkflowsConsole() {
 
   async function handleCreate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    await runAction(async () => {
+    await run(async () => {
       const created = await createWorkflow(formValues);
-      setMessage(`Created ${created.name}`);
+      setMessage(`已创建 ${created.name}`);
       await reloadWorkflows(created.id);
     });
   }
@@ -267,10 +283,10 @@ export function WorkflowsConsole() {
     if (!selectedWorkflowId) {
       return;
     }
-    await runAction(async () => {
+    await run(async () => {
       const graph = builderGraphToWorkflowGraph(nodes as BuilderNode[], edges);
       const version = await publishWorkflowVersion(selectedWorkflowId, graph);
-      setMessage(`Published visual workflow version ${version.version_number}`);
+      setMessage(`已发布可视化工作流版本 ${version.version_number}`);
       await loadWorkflowDetail(selectedWorkflowId);
       await reloadWorkflows(selectedWorkflowId);
     });
@@ -280,11 +296,11 @@ export function WorkflowsConsole() {
     if (!selectedWorkflowId) {
       return;
     }
-    await runAction(async () => {
+    await run(async () => {
       const input = parseRunInput(runInputText);
       const run = await createWorkflowRun(selectedWorkflowId, input);
       setLastRun(run);
-      setMessage(`Run queued: ${run.id}`);
+      setMessage(`运行已排队：${run.id}`);
       applyRunStatuses(run);
     });
   }
@@ -293,10 +309,10 @@ export function WorkflowsConsole() {
     if (!lastRun) {
       return;
     }
-    await runAction(async () => {
+    await run(async () => {
       const run = await executeRun(lastRun.id);
       setLastRun(run);
-      setMessage(`Run ${run.status}`);
+      setMessage(`运行 ${statusLabel(run.status)}`);
       applyRunStatuses(run);
     });
   }
@@ -333,61 +349,47 @@ export function WorkflowsConsole() {
     updateSelectedNodeData({ input_mapping: nextInputMapping });
   }
 
-  async function runAction(action: () => Promise<void>) {
-    try {
-      setBusy(true);
-      setMessage(null);
-      await action();
-    } catch (error) {
-      setMessage(errorMessage(error));
-    } finally {
-      setBusy(false);
-    }
-  }
-
   return (
     <div className="space-y-6">
-      <section className="border-b border-zinc-200 pb-5">
-        <p className="text-xs font-semibold uppercase tracking-normal text-teal-700">Visual Workflow Builder</p>
+      <section className="border-b border-line pb-5">
+        <p className="text-xs font-semibold uppercase tracking-wide text-accent">可视化工作流编排</p>
         <div className="mt-2 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
           <div>
-            <h1 className="text-2xl font-semibold text-zinc-950">Workflows</h1>
-            <p className="mt-1 text-sm text-zinc-500">Build, publish, and execute visual Agent workflows.</p>
+            <h1 className="text-2xl font-semibold text-ink">工作流</h1>
+            <p className="mt-1 text-sm text-ink-3">编排、发布并执行可视化的智能体工作流。</p>
           </div>
           <div className="flex flex-wrap gap-2 text-xs">
-            <StatusPill label="Phase" value="6" tone="ready" />
-            <StatusPill label="Canvas" value="React Flow" tone="ready" />
-            <StatusPill label="Runtime" value="Sequential MVP" tone="ready" />
+            <StatusPill label="阶段" value="6" tone="success" />
+            <StatusPill label="画布" value="React Flow" tone="success" />
+            <StatusPill label="运行时" value="顺序执行 MVP" tone="success" />
           </div>
         </div>
       </section>
 
-      {message ? (
-        <div className="rounded-md border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-700">{message}</div>
-      ) : null}
+      {message ? <MessageBanner message={message} /> : null}
 
       <section className="grid gap-5 xl:grid-cols-[280px_minmax(0,1fr)_380px]">
         <div className="space-y-5">
-          <div className="rounded-lg border border-zinc-200 bg-white">
-            <div className="flex items-center justify-between gap-3 border-b border-zinc-200 px-4 py-3">
+          <GlassCard className="overflow-hidden">
+            <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3">
               <div>
-                <div className="text-sm font-semibold text-zinc-950">Workflow List</div>
-                <div className="mt-1 text-xs text-zinc-500">{workflows.length} configured</div>
+                <div className="text-sm font-semibold text-ink">工作流列表</div>
+                <div className="mt-1 text-xs text-ink-3">{workflows.length} 个已配置</div>
               </div>
-              <button className="control-button" disabled={busy} onClick={() => void loadInitialData()} type="button">
-                Refresh
-              </button>
+              <Button variant="default" disabled={busy} onClick={() => void loadInitialData()} type="button">
+                刷新
+              </Button>
             </div>
             <div className="max-h-[340px] overflow-auto p-2">
               {workflows.length === 0 ? (
-                <div className="px-3 py-6 text-sm text-zinc-500">Create a workflow to start</div>
+                <div className="px-3 py-6 text-sm text-ink-3">请先创建工作流</div>
               ) : (
                 workflows.map((workflow) => (
                   <button
-                    className={`mb-2 w-full rounded-md border px-3 py-3 text-left transition ${
+                    className={`mb-2 w-full rounded-xl border px-3 py-3 text-left transition ${
                       selectedWorkflowId === workflow.id
-                        ? "border-teal-500 bg-teal-50 text-teal-950"
-                        : "border-zinc-200 bg-white text-zinc-700 hover:border-zinc-300 hover:bg-zinc-50"
+                        ? "border-accent bg-accent/10 text-accent"
+                        : "border-line bg-surface-solid text-ink-2 hover:border-line-strong hover:bg-elevated"
                     }`}
                     key={workflow.id}
                     onClick={() => setSelectedWorkflowId(workflow.id)}
@@ -395,79 +397,79 @@ export function WorkflowsConsole() {
                   >
                     <div className="flex items-center justify-between gap-3">
                       <span className="text-sm font-medium">{workflow.name}</span>
-                      <span className="text-xs capitalize">{workflow.status}</span>
+                      <span className="text-xs">{statusLabel(workflow.status)}</span>
                     </div>
-                    <div className="mt-1 text-xs text-zinc-500">
+                    <div className="mt-1 text-xs text-ink-3">
                       v{workflow.current_version?.version_number ?? "-"} · {workflow.current_version?.graph.nodes.length ?? 0} nodes
                     </div>
                   </button>
                 ))
               )}
             </div>
-          </div>
+          </GlassCard>
 
-          <form className="rounded-lg border border-zinc-200 bg-white p-4" onSubmit={handleCreate}>
+          <GlassCard as="form" className="space-y-4 p-4" onSubmit={handleCreate}>
             <div className="flex items-center justify-between gap-3">
-              <h2 className="text-base font-semibold text-zinc-950">Workflow</h2>
-              <button className="control-button primary" disabled={busy} type="submit">
-                Create
-              </button>
+              <h2 className="text-base font-semibold text-ink">工作流</h2>
+              <Button variant="primary" disabled={busy} type="submit">
+                创建
+              </Button>
             </div>
-            <Field className="mt-4" label="Name">
+            <Field label="Name">
               <input
                 className="field-input"
                 onChange={(event) => setFormValues({ ...formValues, name: event.target.value })}
                 value={formValues.name}
               />
             </Field>
-            <Field className="mt-4" label="Description">
+            <Field label="Description">
               <textarea
                 className="field-input min-h-20 resize-y"
                 onChange={(event) => setFormValues({ ...formValues, description: event.target.value })}
                 value={formValues.description}
               />
             </Field>
-          </form>
+          </GlassCard>
 
-          <div className="rounded-lg border border-zinc-200 bg-white p-4">
-            <h2 className="text-base font-semibold text-zinc-950">Palette</h2>
+          <GlassCard className="p-4">
+            <h2 className="text-base font-semibold text-ink">节点面板</h2>
             <div className="mt-4 grid grid-cols-2 gap-2">
-              <button className="control-button" disabled={busy} onClick={() => loadTemplateGraph()} type="button">
-                Template
-              </button>
-              <button className="control-button" disabled={busy} onClick={() => addNode("agent")} type="button">
-                Agent
-              </button>
-              <button className="control-button" disabled={busy} onClick={() => addNode("retrieval")} type="button">
-                Retrieval
-              </button>
-              <button className="control-button" disabled={busy} onClick={() => addNode("tool")} type="button">
-                Tool
-              </button>
-              <button className="control-button" disabled={busy} onClick={() => addNode("approval")} type="button">
-                Approval
-              </button>
-              <button className="control-button" disabled={busy} onClick={() => addNode("end")} type="button">
-                End
-              </button>
+              <Button variant="default" disabled={busy} onClick={() => loadTemplateGraph()} type="button">
+                模板
+              </Button>
+              <Button variant="default" disabled={busy} onClick={() => addNode("agent")} type="button">
+                智能体
+              </Button>
+              <Button variant="default" disabled={busy} onClick={() => addNode("retrieval")} type="button">
+                检索
+              </Button>
+              <Button variant="default" disabled={busy} onClick={() => addNode("tool")} type="button">
+                工具
+              </Button>
+              <Button variant="default" disabled={busy} onClick={() => addNode("approval")} type="button">
+                审批
+              </Button>
+              <Button variant="default" disabled={busy} onClick={() => addNode("end")} type="button">
+                结束
+              </Button>
             </div>
-            <p className="mt-3 text-xs text-zinc-500">Tool nodes execute sequentially; Condition nodes remain planned for a later runtime phase.</p>
-          </div>
+            <p className="mt-3 text-xs text-ink-3">工具节点按顺序执行；条件节点将在后续运行时阶段支持。</p>
+          </GlassCard>
         </div>
 
-        <div className="min-h-[760px] overflow-hidden rounded-lg border border-zinc-200 bg-white">
-          <div className="flex items-center justify-between gap-3 border-b border-zinc-200 px-4 py-3">
+        <GlassCard className="min-h-[760px] overflow-hidden">
+          <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3">
             <div>
-              <h2 className="text-base font-semibold text-zinc-950">Canvas</h2>
-              <p className="mt-1 text-xs text-zinc-500">{nodes.length} nodes · {edges.length} edges</p>
+              <h2 className="text-base font-semibold text-ink">画布</h2>
+              <p className="mt-1 text-xs text-ink-3">{nodes.length} 个节点 · {edges.length} 条边</p>
             </div>
             <div className="flex flex-wrap gap-2">
-              <button className="control-button" disabled={busy || !selectedNodeId} onClick={deleteSelectedNode} type="button">
-                Delete Node
-              </button>
-              <button className="control-button primary" disabled={busy || !selectedWorkflowId} onClick={handlePublish} type="button">
-                Publish
-              </button>
+              <Button variant="default" disabled={busy || !selectedNodeId} onClick={deleteSelectedNode} type="button">
+                删除节点
+              </Button>
+              <Button variant="primary" disabled={busy || !selectedWorkflowId} onClick={handlePublish} type="button">
+                发布
+              </Button>
             </div>
           </div>
           <div className="h-[704px]">
@@ -486,22 +488,22 @@ export function WorkflowsConsole() {
               <Background />
             </ReactFlow>
           </div>
-        </div>
+        </GlassCard>
 
         <div className="space-y-5">
-          <section className="rounded-lg border border-zinc-200 bg-white p-4">
+          <GlassCard className="p-4">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <h2 className="text-base font-semibold text-zinc-950">Node Config</h2>
-                <p className="mt-1 text-xs text-zinc-500">{selectedNode?.id ?? "Select a node"}</p>
+                <h2 className="text-base font-semibold text-ink">节点配置</h2>
+                <p className="mt-1 text-xs text-ink-3">{selectedNode?.id ?? "请选择节点"}</p>
               </div>
-              <span className="rounded-md border border-zinc-200 px-2.5 py-1 text-xs font-medium text-zinc-600">
-                {selectedNode?.data.nodeType ?? "none"}
+              <span className="rounded-md border border-line px-2.5 py-1 text-xs font-medium text-ink-2">
+                {statusLabel(selectedNode?.data.nodeType ?? "none")}
               </span>
             </div>
             {selectedNode ? (
               <div className="mt-4 space-y-4">
-                <Field label="Label">
+                <Field label="标签">
                   <input
                     className="field-input"
                     onChange={(event) => updateSelectedNodeData({ label: event.target.value })}
@@ -510,13 +512,13 @@ export function WorkflowsConsole() {
                 </Field>
                 {selectedNode.data.nodeType === "agent" ? (
                   <>
-                    <Field label="Agent Version">
+                    <Field label="智能体版本">
                       <select
                         className="field-input"
                         onChange={(event) => updateSelectedNodeConfig({ agent_version_id: event.target.value })}
                         value={String(selectedNode.data.config.agent_version_id ?? "")}
                       >
-                        <option value="">Select Agent Version</option>
+                        <option value="">请选择智能体版本</option>
                         {agents.map((agent) => (
                           <option disabled={!agent.current_version_id} key={agent.id} value={agent.current_version_id ?? ""}>
                             {agent.name}
@@ -524,7 +526,7 @@ export function WorkflowsConsole() {
                         ))}
                       </select>
                     </Field>
-                    <Field label="Instruction">
+                    <Field label="指令">
                       <textarea
                         className="field-input min-h-24 resize-y"
                         onChange={(event) => updateSelectedNodeConfig({ instruction: event.target.value })}
@@ -535,13 +537,13 @@ export function WorkflowsConsole() {
                 ) : null}
                 {selectedNode.data.nodeType === "retrieval" ? (
                   <>
-                    <Field label="Knowledge Base">
+                    <Field label="知识库">
                       <select
                         className="field-input"
                         onChange={(event) => updateSelectedNodeConfig({ knowledge_base_ids: event.target.value ? [event.target.value] : [] })}
                         value={String((selectedNode.data.config.knowledge_base_ids as string[] | undefined)?.[0] ?? "")}
                       >
-                        <option value="">Select Knowledge Base</option>
+                        <option value="">请选择知识库</option>
                         {knowledgeBases.map((knowledgeBase) => (
                           <option key={knowledgeBase.id} value={knowledgeBase.id}>
                             {knowledgeBase.name}
@@ -563,13 +565,13 @@ export function WorkflowsConsole() {
                 ) : null}
                 {selectedNode.data.nodeType === "tool" ? (
                   <>
-                    <Field label="Agent">
+                    <Field label="智能体">
                       <select
                         className="field-input"
                         onChange={(event) => updateSelectedNodeConfig({ agent_id: event.target.value })}
                         value={String(selectedNode.data.config.agent_id ?? "")}
                       >
-                        <option value="">Select Agent</option>
+                        <option value="">请选择智能体</option>
                         {agents.map((agent) => (
                           <option key={agent.id} value={agent.id}>
                             {agent.name}
@@ -577,13 +579,13 @@ export function WorkflowsConsole() {
                         ))}
                       </select>
                     </Field>
-                    <Field label="Tool">
+                    <Field label="工具">
                       <select
                         className="field-input"
                         onChange={(event) => updateSelectedNodeConfig({ tool_id: event.target.value })}
                         value={String(selectedNode.data.config.tool_id ?? "")}
                       >
-                        <option value="">Select Tool</option>
+                        <option value="">请选择工具</option>
                         {tools.map((tool) => (
                           <option disabled={tool.status !== "active"} key={tool.id} value={tool.id}>
                             {tool.display_name || tool.name} · {tool.risk_level}
@@ -591,14 +593,14 @@ export function WorkflowsConsole() {
                         ))}
                       </select>
                     </Field>
-                    <Field label="Approval Title">
+                    <Field label="审批标题">
                       <input
                         className="field-input"
                         onChange={(event) => updateSelectedNodeConfig({ approval_title: event.target.value })}
                         value={String(selectedNode.data.config.approval_title ?? "")}
                       />
                     </Field>
-                    <Field label="Approval Instructions">
+                    <Field label="审批说明">
                       <textarea
                         className="field-input min-h-20 resize-y"
                         onChange={(event) => updateSelectedNodeConfig({ approval_instructions: event.target.value })}
@@ -609,42 +611,42 @@ export function WorkflowsConsole() {
                 ) : null}
                 {selectedNode.data.nodeType === "approval" ? (
                   <>
-                    <Field label="Approval Title">
+                    <Field label="审批标题">
                       <input
                         className="field-input"
                         onChange={(event) => updateSelectedNodeConfig({ title: event.target.value })}
                         value={String(selectedNode.data.config.title ?? "")}
                       />
                     </Field>
-                    <Field label="Instructions">
+                    <Field label="指令">
                       <textarea
                         className="field-input min-h-24 resize-y"
                         onChange={(event) => updateSelectedNodeConfig({ instructions: event.target.value })}
                         value={String(selectedNode.data.config.instructions ?? "")}
                       />
                     </Field>
-                    <Field label="Risk Level">
+                    <Field label="风险等级">
                       <select
                         className="field-input"
                         onChange={(event) => updateSelectedNodeConfig({ risk_level: event.target.value })}
                         value={String(selectedNode.data.config.risk_level ?? "medium")}
                       >
-                        <option value="low">low</option>
-                        <option value="medium">medium</option>
-                        <option value="high">high</option>
-                        <option value="critical">critical</option>
+                        <option value="low">低</option>
+                        <option value="medium">中</option>
+                        <option value="high">高</option>
+                        <option value="critical">严重</option>
                       </select>
                     </Field>
                   </>
                 ) : null}
-                <Field label="Input Mapping JSON">
+                <Field label="输入映射 JSON">
                   <textarea
                     className="field-input min-h-28 resize-y font-mono"
                     onChange={(event) => {
                       try {
                         updateSelectedNodeInputMapping(JSON.parse(event.target.value) as Record<string, unknown>);
                       } catch {
-                        setMessage("Input mapping must be valid JSON");
+                        setMessage("输入映射必须是合法的 JSON");
                       }
                     }}
                     value={JSON.stringify(selectedNode.data.input_mapping ?? {}, null, 2)}
@@ -652,20 +654,20 @@ export function WorkflowsConsole() {
                 </Field>
               </div>
             ) : (
-              <div className="mt-4 text-sm text-zinc-500">Select a canvas node to configure it</div>
+              <div className="mt-4 text-sm text-ink-3">请选择画布上的节点进行配置</div>
             )}
-          </section>
+          </GlassCard>
 
-          <section className="rounded-lg border border-zinc-200 bg-white p-4">
+          <GlassCard className="p-4">
             <div className="flex items-center justify-between gap-3">
-              <h2 className="text-base font-semibold text-zinc-950">Run</h2>
+              <h2 className="text-base font-semibold text-ink">运行</h2>
               <div className="flex gap-2">
-                <button className="control-button primary" disabled={busy || !selectedWorkflowId} onClick={handleCreateRun} type="button">
-                  Queue
-                </button>
-                <button className="control-button" disabled={busy || !lastRun} onClick={handleExecuteRun} type="button">
-                  Execute
-                </button>
+                <Button variant="primary" disabled={busy || !selectedWorkflowId} onClick={handleCreateRun} type="button">
+                  排队
+                </Button>
+                <Button variant="default" disabled={busy || !lastRun} onClick={handleExecuteRun} type="button">
+                  执行
+                </Button>
               </div>
             </div>
             <textarea
@@ -674,27 +676,27 @@ export function WorkflowsConsole() {
               value={runInputText}
             />
             {lastRun ? (
-              <div className="mt-4 rounded-md border border-emerald-200 bg-emerald-50 p-3">
+              <div className="mt-4 rounded-xl border border-success/30 bg-success/10 p-3">
                 <div className="flex items-center justify-between gap-3">
-                  <div className="text-xs font-semibold uppercase tracking-normal text-emerald-700">Last Run</div>
-                  <span className="text-xs font-medium text-emerald-700">{lastRun.status}</span>
+                  <div className="text-xs font-semibold uppercase tracking-wide text-success">最近运行</div>
+                  <span className="text-xs font-medium text-success">{statusLabel(lastRun.status)}</span>
                 </div>
-                <div className="mt-1 text-xs text-emerald-700">
+                <div className="mt-1 text-xs text-success">
                   {lastRun.steps.length} steps · {lastRun.tool_calls.length} tool calls
                 </div>
-                <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap text-sm text-emerald-950">
+                <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap text-sm text-ink">
                   {JSON.stringify(lastRun.output ?? lastRun.input, null, 2)}
                 </pre>
               </div>
             ) : null}
-          </section>
+          </GlassCard>
 
-          <section className="rounded-lg border border-zinc-200 bg-white p-4">
-            <h2 className="text-base font-semibold text-zinc-950">Graph JSON</h2>
-            <pre className="mt-4 max-h-72 overflow-auto rounded-md border border-zinc-200 bg-zinc-50 p-3 text-xs text-zinc-700">
+          <GlassCard className="p-4">
+            <h2 className="text-base font-semibold text-ink">流程图 JSON</h2>
+            <pre className="mt-4 max-h-72 overflow-auto rounded-xl border border-line bg-surface-solid p-3 text-xs text-ink-2">
               {graphPreview}
             </pre>
-          </section>
+          </GlassCard>
         </div>
       </section>
     </div>
@@ -705,67 +707,17 @@ function WorkflowNodeCard({ data, selected }: NodeProps<Node<BuilderNodeData>>) 
   const tone = statusTone(data.status);
   return (
     <div
-      className={`min-w-44 rounded-md border bg-white px-3 py-2 shadow-sm ${
-        selected ? "border-teal-500 ring-2 ring-teal-100" : "border-zinc-200"
+      className={`min-w-44 rounded-xl border bg-surface-solid px-3 py-2 shadow-soft ${
+        selected ? "border-accent ring-2 ring-accent-soft" : "border-line"
       }`}
     >
       <div className="flex items-center justify-between gap-3">
-        <div className="text-sm font-semibold text-zinc-950">{data.label}</div>
-        <span className={`rounded-sm px-1.5 py-0.5 text-[10px] font-semibold uppercase ${tone}`}>{data.status ?? data.nodeType}</span>
+        <div className="text-sm font-semibold text-ink">{data.label}</div>
+        <span className={`rounded-sm px-1.5 py-0.5 text-[10px] font-semibold uppercase ${nodeToneClass[tone]}`}>
+          {statusLabel(data.status ?? data.nodeType)}
+        </span>
       </div>
-      <div className="mt-1 text-xs text-zinc-500">{data.nodeType}</div>
+      <div className="mt-1 text-xs text-ink-3">{statusLabel(data.nodeType)}</div>
     </div>
   );
-}
-
-function Field({
-  children,
-  className = "",
-  label,
-}: {
-  children: ReactNode;
-  className?: string;
-  label: string;
-}) {
-  return (
-    <label className={`block ${className}`}>
-      <span className="text-xs font-semibold uppercase tracking-normal text-zinc-500">{label}</span>
-      <div className="mt-1">{children}</div>
-    </label>
-  );
-}
-
-function StatusPill({
-  label,
-  tone,
-  value,
-}: {
-  label: string;
-  tone: "neutral" | "ready";
-  value: string;
-}) {
-  const toneClassName =
-    tone === "ready" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-zinc-200 bg-white text-zinc-600";
-  return (
-    <span className={`rounded-md border px-2.5 py-1 font-medium ${toneClassName}`}>
-      {label}: {value}
-    </span>
-  );
-}
-
-function statusTone(status?: string): string {
-  if (status === "succeeded") {
-    return "bg-emerald-50 text-emerald-700";
-  }
-  if (status === "running" || status === "queued") {
-    return "bg-amber-50 text-amber-700";
-  }
-  if (status === "failed") {
-    return "bg-rose-50 text-rose-700";
-  }
-  return "bg-zinc-100 text-zinc-600";
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "Request failed";
 }

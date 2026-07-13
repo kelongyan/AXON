@@ -12,7 +12,7 @@ export async function parseApiError(response: Response): Promise<string> {
   } catch {
     // Fall through to the status text below.
   }
-  return response.statusText || `Request failed with ${response.status}`;
+  return response.statusText || `请求失败（状态码 ${response.status}）`;
 }
 
 export function buildApiHeaders(initHeaders?: HeadersInit, includeJson = true): HeadersInit {

@@ -4,13 +4,13 @@ export type NavigationItem = {
 };
 
 export const navigationItems: NavigationItem[] = [
-  { label: "Dashboard", href: "/" },
-  { label: "Agents", href: "/agents" },
-  { label: "Workflows", href: "/workflows" },
-  { label: "Runs", href: "/runs" },
-  { label: "Knowledge Bases", href: "/knowledge-bases" },
-  { label: "Tools", href: "/tools" },
-  { label: "Evaluations", href: "/evaluations" },
-  { label: "Settings", href: "/settings" },
+  { label: "仪表盘", href: "/" },
+  { label: "智能体", href: "/agents" },
+  { label: "工作流", href: "/workflows" },
+  { label: "运行记录", href: "/runs" },
+  { label: "知识库", href: "/knowledge-bases" },
+  { label: "工具", href: "/tools" },
+  { label: "评估", href: "/evaluations" },
+  { label: "设置", href: "/settings" },
 ];
 
