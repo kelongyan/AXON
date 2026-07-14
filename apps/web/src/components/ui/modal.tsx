@@ -24,7 +24,7 @@ export function Modal({
       {open ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <motion.div
-            className="absolute inset-0 bg-black/30 backdrop-blur-sm"
+            className="absolute inset-0 bg-black/20 backdrop-blur-sm"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
@@ -32,7 +32,7 @@ export function Modal({
           />
           <motion.div
             className={cn(
-              "relative z-10 w-full max-w-lg rounded-3xl border border-line bg-surface-solid p-6 shadow-float backdrop-blur-xl",
+              "relative z-10 w-full max-w-lg rounded-2xl border border-line bg-surface-solid p-6 shadow-float",
               className,
             )}
             initial={{ opacity: 0, scale: 0.96, y: 12 }}
@@ -41,7 +41,7 @@ export function Modal({
             transition={{ type: "spring", stiffness: 280, damping: 28 }}
           >
             <div className="flex items-center justify-between">
-              <h2 className="text-lg font-semibold text-ink">{title}</h2>
+              <h2 className="text-section-title text-ink">{title}</h2>
               <button
                 onClick={onClose}
                 className="rounded-full p-1.5 text-ink-3 transition-colors hover:bg-surface hover:text-ink"

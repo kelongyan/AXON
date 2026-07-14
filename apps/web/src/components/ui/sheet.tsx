@@ -24,7 +24,7 @@ export function Sheet({
       {open ? (
         <div className="fixed inset-0 z-50">
           <motion.div
-            className="absolute inset-0 bg-black/30 backdrop-blur-sm"
+            className="absolute inset-0 bg-black/20 backdrop-blur-sm"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
@@ -32,7 +32,7 @@ export function Sheet({
           />
           <motion.aside
             className={cn(
-              "absolute inset-y-0 z-10 flex w-full max-w-md flex-col border-line bg-surface-solid p-6 shadow-float backdrop-blur-xl",
+              "absolute inset-y-0 z-10 flex w-full max-w-lg flex-col border-line bg-surface-solid p-6 shadow-float",
               side === "right" ? "right-0 border-l" : "left-0 border-r",
             )}
             initial={{ x: side === "right" ? "100%" : "-100%" }}
@@ -41,7 +41,7 @@ export function Sheet({
             transition={{ type: "spring", stiffness: 260, damping: 30 }}
           >
             <div className="flex items-center justify-between">
-              <h2 className="text-lg font-semibold text-ink">{title}</h2>
+              <h2 className="text-section-title text-ink">{title}</h2>
               <button
                 onClick={onClose}
                 className="rounded-full p-1.5 text-ink-3 transition-colors hover:bg-surface hover:text-ink"

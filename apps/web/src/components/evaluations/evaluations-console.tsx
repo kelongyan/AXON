@@ -1,7 +1,6 @@
 "use client";
 
 import { type FormEvent, useEffect, useMemo, useState } from "react";
-import type { ReactNode } from "react";
 
 import {
   type Evaluation,
@@ -17,7 +16,8 @@ import { statusLabel } from "@/lib/status-label";
 import { useRunAction } from "@/lib/use-run-action";
 import { Button } from "@/components/ui/button";
 import { Field } from "@/components/ui/field";
-import { GlassCard } from "@/components/ui/glass-card";
+import { Card } from "@/components/ui/glass-card";
+import { ListItem } from "@/components/ui/list-item";
 import { MessageBanner } from "@/components/ui/message-banner";
 import { StatusPill } from "@/components/ui/status-pill";
 
@@ -42,11 +42,14 @@ function shortId(value: string): string {
   return value.slice(0, 8);
 }
 
+type DetailTab = "cases" | "results";
+
 export function EvaluationsConsole() {
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [evaluations, setEvaluations] = useState<Evaluation[]>([]);
   const [selectedEvaluationId, setSelectedEvaluationId] = useState<string | null>(null);
   const [formValues, setFormValues] = useState<EvaluationFormValues>(defaultFormValues);
+  const [activeTab, setActiveTab] = useState<DetailTab>("cases");
   const { busy, message, run, setMessage } = useRunAction();
 
   const selectedEvaluation = useMemo(
@@ -98,13 +101,19 @@ export function EvaluationsConsole() {
     });
   }
 
+  const tabItems: Array<{ key: DetailTab; label: string }> = [
+    { key: "cases", label: "用例" },
+    { key: "results", label: "运行结果" },
+  ];
+
   return (
     <div className="space-y-6">
+      {/* Header */}
       <section className="border-b border-line pb-5">
-        <p className="text-xs font-semibold uppercase tracking-wide text-accent">评估</p>
+        <p className="text-label text-accent">评估</p>
         <div className="mt-2 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
           <div>
-            <h1 className="text-2xl font-semibold text-ink">评估</h1>
+            <h1 className="text-page-title text-ink">评估</h1>
             <p className="mt-1 text-sm text-ink-3">创建固定用例集，批量运行工作流并检视结果。</p>
           </div>
           <div className="flex flex-wrap gap-2 text-xs">
@@ -117,9 +126,11 @@ export function EvaluationsConsole() {
 
       {message ? <MessageBanner message={message} /> : null}
 
-      <section className="grid gap-5 xl:grid-cols-[380px_minmax(0,1fr)]">
+      <section className="grid gap-5 xl:grid-cols-[280px_minmax(0,1fr)]">
+        {/* Left column: Evaluation list + create form */}
         <div className="space-y-5">
-          <GlassCard as="form" className="space-y-4 p-4" onSubmit={handleCreate}>
+          {/* Create form */}
+          <Card as="form" className="space-y-4 p-4" onSubmit={handleCreate}>
             <div className="flex items-center justify-between gap-3">
               <h2 className="text-base font-semibold text-ink">新建评估</h2>
               <Button variant="primary" disabled={busy || !formValues.workflowId} type="submit">
@@ -168,9 +179,10 @@ export function EvaluationsConsole() {
                 value={formValues.casesText}
               />
             </Field>
-          </GlassCard>
+          </Card>
 
-          <GlassCard className="overflow-hidden">
+          {/* Evaluation list */}
+          <Card className="overflow-hidden">
             <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3">
               <div>
                 <div className="text-sm font-semibold text-ink">评估列表</div>
@@ -185,37 +197,33 @@ export function EvaluationsConsole() {
                 <div className="px-3 py-6 text-sm text-ink-3">暂无评估</div>
               ) : (
                 evaluations.map((evaluation) => (
-                  <button
-                    className={`mb-2 w-full rounded-xl border px-3 py-3 text-left transition ${
-                      selectedEvaluation?.id === evaluation.id
-                        ? "border-accent bg-accent/10 text-accent"
-                        : "border-line bg-surface-solid text-ink-2 hover:border-line-strong hover:bg-elevated"
-                    }`}
+                  <ListItem
                     key={evaluation.id}
+                    selected={selectedEvaluation?.id === evaluation.id}
+                    title={evaluation.name}
+                    subtitle={`${String(evaluation.summary.case_count ?? evaluation.cases.length)} 个用例 · ${String(evaluation.summary.success_count ?? 0)} 个通过`}
+                    badge={
+                      <span className="text-xs text-ink-3">{statusLabel(evaluation.status)}</span>
+                    }
                     onClick={() => setSelectedEvaluationId(evaluation.id)}
-                    type="button"
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="text-sm font-medium">{evaluation.name}</span>
-                      <span className="text-xs">{statusLabel(evaluation.status)}</span>
-                    </div>
-                    <div className="mt-1 text-xs text-ink-3">
-                      {String(evaluation.summary.case_count ?? evaluation.cases.length)} 个用例 · {String(evaluation.summary.success_count ?? 0)} 个通过
-                    </div>
-                  </button>
+                  />
                 ))
               )}
             </div>
-          </GlassCard>
+          </Card>
         </div>
 
+        {/* Right column: detail area */}
         <div className="space-y-5">
-          <GlassCard className="p-5">
+          {/* Selected evaluation header */}
+          <Card className="p-5">
             <div className="flex flex-col gap-3 border-b border-line pb-4 md:flex-row md:items-center md:justify-between">
               <div>
                 <h2 className="text-base font-semibold text-ink">{selectedEvaluation?.name ?? "请选择评估"}</h2>
                 <p className="mt-1 text-sm text-ink-3">
-                  {selectedEvaluation ? `${statusLabel(selectedEvaluation.status)} · ${selectedEvaluation.workflow_id}` : "未选择评估"}
+                  {selectedEvaluation
+                    ? `${statusLabel(selectedEvaluation.status)} · ${selectedEvaluation.workflow_id}`
+                    : "未选择评估"}
                 </p>
               </div>
               <Button variant="primary" disabled={busy || !selectedEvaluation} onClick={handleRun} type="button">
@@ -228,59 +236,104 @@ export function EvaluationsConsole() {
               <Metric label="失败" value={String(resultSummary.failureCount || selectedEvaluation?.summary.failure_count || 0)} />
               <Metric label="平均延迟" value={`${resultSummary.averageLatencyMs} ms`} />
             </div>
-          </GlassCard>
+          </Card>
 
-          <section className="grid gap-5 xl:grid-cols-2">
-            <Panel title="用例">
-              {selectedEvaluation?.cases.length ? (
-                selectedEvaluation.cases.map((item) => (
-                  <div className="rounded-xl border border-line px-3 py-2 text-sm" key={item.id}>
-                    <div className="font-medium text-ink-2">{item.ordinal}. {item.name}</div>
-                    <pre className="mt-2 max-h-28 overflow-auto rounded-lg bg-surface-solid p-2 text-[11px] text-ink-3">
-                      {JSON.stringify(item.input, null, 2)}
-                    </pre>
-                  </div>
-                ))
-              ) : (
-                <div className="text-sm text-ink-3">暂无用例</div>
-              )}
-            </Panel>
+          {/* Tabs */}
+          <div className="flex gap-1 border-b border-line">
+            {tabItems.map((tab) => (
+              <button
+                className={`px-4 py-2.5 text-sm font-medium transition-colors ${
+                  activeTab === tab.key
+                    ? "border-b-2 border-accent text-accent"
+                    : "text-ink-3 hover:text-ink"
+                }`}
+                key={tab.key}
+                onClick={() => setActiveTab(tab.key)}
+                type="button"
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
 
-            <Panel title="结果">
-              {selectedEvaluation?.results.length ? (
-                selectedEvaluation.results.map((result) => (
-                  <div className="rounded-xl border border-line px-3 py-2 text-sm" key={result.id}>
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="font-medium text-ink-2">{result.run_id ? shortId(result.run_id) : "No run"}</span>
-                      <span className={result.status === "succeeded" ? "text-xs text-success" : "text-xs text-danger"}>
-                        {statusLabel(result.status)}
-                      </span>
+          {/* Tab: 用例 */}
+          {activeTab === "cases" ? (
+            <Card className="p-5">
+              <div className="border-b border-line pb-4">
+                <h2 className="text-base font-semibold text-ink">用例列表</h2>
+                <p className="mt-1 text-sm text-ink-3">
+                  {selectedEvaluation?.cases.length ?? 0} 个用例
+                </p>
+              </div>
+              <div className="mt-4 max-h-[520px] space-y-2 overflow-auto">
+                {selectedEvaluation?.cases.length ? (
+                  selectedEvaluation.cases.map((item) => (
+                    <div className="rounded-xl border border-line px-3 py-2 text-sm" key={item.id}>
+                      <div className="font-medium text-ink-2">
+                        {item.ordinal}. {item.name}
+                      </div>
+                      <pre className="mt-2 max-h-28 overflow-auto rounded-lg bg-surface-solid p-2 text-[11px] text-ink-3">
+                        {JSON.stringify(item.input, null, 2)}
+                      </pre>
                     </div>
-                    <div className="mt-1 text-xs text-ink-3">
-                      {result.total_tokens} tokens · {result.latency_ms} ms
-                    </div>
-                    <pre className="mt-2 max-h-32 overflow-auto rounded-lg bg-surface-solid p-2 text-[11px] text-ink-3">
-                      {JSON.stringify(result.output ?? result.error_message, null, 2)}
-                    </pre>
-                  </div>
-                ))
-              ) : (
-                <div className="text-sm text-ink-3">暂无结果</div>
-              )}
-            </Panel>
-          </section>
+                  ))
+                ) : (
+                  <div className="text-sm text-ink-3">暂无用例</div>
+                )}
+              </div>
+            </Card>
+          ) : null}
+
+          {/* Tab: 运行结果 */}
+          {activeTab === "results" ? (
+            <div className="space-y-5">
+              {/* Result metrics */}
+              <div className="grid gap-4 md:grid-cols-4">
+                <Metric label="成功" value={String(resultSummary.successCount)} />
+                <Metric label="失败" value={String(resultSummary.failureCount)} />
+                <Metric label="总 Token" value={String(resultSummary.totalTokens)} />
+                <Metric label="平均延迟" value={`${resultSummary.averageLatencyMs} ms`} />
+              </div>
+
+              <Card className="p-5">
+                <div className="border-b border-line pb-4">
+                  <h2 className="text-base font-semibold text-ink">运行结果</h2>
+                  <p className="mt-1 text-sm text-ink-3">
+                    {selectedEvaluation?.results.length ?? 0} 条结果
+                  </p>
+                </div>
+                <div className="mt-4 max-h-[520px] space-y-2 overflow-auto">
+                  {selectedEvaluation?.results.length ? (
+                    selectedEvaluation.results.map((result) => (
+                      <div className="rounded-xl border border-line px-3 py-2 text-sm" key={result.id}>
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="font-medium text-ink-2">
+                            {result.run_id ? shortId(result.run_id) : "No run"}
+                          </span>
+                          <StatusPill
+                            status={result.status}
+                            tone={result.status === "succeeded" ? "success" : "danger"}
+                            size="sm"
+                          />
+                        </div>
+                        <div className="mt-1 text-xs text-ink-3">
+                          {result.total_tokens} tokens · {result.latency_ms} ms
+                        </div>
+                        <pre className="mt-2 max-h-32 overflow-auto rounded-lg bg-surface-solid p-2 text-[11px] text-ink-3">
+                          {JSON.stringify(result.output ?? result.error_message, null, 2)}
+                        </pre>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="text-sm text-ink-3">暂无结果</div>
+                  )}
+                </div>
+              </Card>
+            </div>
+          ) : null}
         </div>
       </section>
     </div>
-  );
-}
-
-function Panel({ children, title }: { children: ReactNode; title: string }) {
-  return (
-    <GlassCard className="p-4">
-      <h2 className="text-base font-semibold text-ink">{title}</h2>
-      <div className="mt-4 max-h-[520px] space-y-2 overflow-auto">{children}</div>
-    </GlassCard>
   );
 }
 

@@ -10,12 +10,30 @@ type FormProps = FormHTMLAttributes<HTMLFormElement> & {
   as: "form";
 };
 
-type GlassCardProps = BaseProps | FormProps;
+type CardProps = BaseProps | FormProps;
 
 const glassClass = "rounded-2xl border border-line bg-surface shadow-card backdrop-blur-xl";
+const solidClass = "rounded-2xl border border-line bg-surface-solid shadow-soft";
+const metricClass = "rounded-2xl bg-surface-solid p-5";
 
-export function GlassCard(props: GlassCardProps) {
+function resolveTag(as?: string): ElementType {
+  return (as ?? "div") as ElementType;
+}
+
+export function GlassCard(props: CardProps) {
   const { className, as, ...rest } = props as HTMLAttributes<HTMLElement> & { as?: string };
-  const Tag = (as ?? "div") as ElementType;
+  const Tag = resolveTag(as);
   return <Tag className={cn(glassClass, className)} {...rest} />;
+}
+
+export function Card(props: CardProps) {
+  const { className, as, ...rest } = props as HTMLAttributes<HTMLElement> & { as?: string };
+  const Tag = resolveTag(as);
+  return <Tag className={cn(solidClass, className)} {...rest} />;
+}
+
+export function MetricCard(props: CardProps) {
+  const { className, as, ...rest } = props as HTMLAttributes<HTMLElement> & { as?: string };
+  const Tag = resolveTag(as);
+  return <Tag className={cn(metricClass, className)} {...rest} />;
 }

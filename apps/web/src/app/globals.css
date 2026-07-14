@@ -3,7 +3,8 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 /* ============================================================
-   字体（保持现有 FrexSansGB，不更换字体系统）
+   字体 — FrexSansGB（8 字重 100-700，CJK 友好）
+   字重约定: body=400, UI标签=500, 区域标题=600, 不用700
    ============================================================ */
 @font-face {
   font-family: "FrexSansGB";
@@ -63,64 +64,76 @@
 }
 
 /* ============================================================
-   设计 Token（浅色为基准；深色在 .dark 下覆盖）
-   单一品牌强调色 = teal；语义状态色仅用于状态指示
+   设计 Token — 浅色基准 / .dark 覆盖
+   品牌强调色 = Apple System Blue #007AFF
+   语义色仅用于状态指示，不做品牌装饰
    ============================================================ */
 @theme {
+  /* ---- 表面色 ---- */
   --color-app: #f5f5f7;
-  --color-surface: rgba(255, 255, 255, 0.72);
+  --color-surface: rgba(255, 255, 255, 0.78);
   --color-surface-solid: #ffffff;
-  --color-elevated: rgba(255, 255, 255, 0.86);
+  --color-elevated: rgba(255, 255, 255, 0.92);
 
-  --color-ink: #1c1c1e;
-  --color-ink-2: #3f3f46;
-  --color-ink-3: #71717a;
+  /* ---- 文字色（暖灰三级） ---- */
+  --color-ink: #1d1d1f;
+  --color-ink-2: #6e6e73;
+  --color-ink-3: #aeaeb2;
 
-  --color-line: rgba(0, 0, 0, 0.08);
-  --color-line-strong: rgba(0, 0, 0, 0.14);
+  /* ---- 分割线 ---- */
+  --color-line: rgba(0, 0, 0, 0.06);
+  --color-line-strong: rgba(0, 0, 0, 0.12);
 
-  --color-accent: #0f766e;
-  --color-accent-hover: #115e59;
-  --color-accent-soft: rgba(15, 118, 110, 0.12);
+  /* ---- 品牌强调色 ---- */
+  --color-accent: #007aff;
+  --color-accent-hover: #0066d6;
+  --color-accent-soft: rgba(0, 122, 255, 0.10);
 
-  --color-success: #15803d;
-  --color-warning: #b45309;
-  --color-danger: #be123c;
-  --color-info: #1d4ed8;
+  /* ---- 语义状态色（Apple 系统色） ---- */
+  --color-success: #34c759;
+  --color-warning: #ff9500;
+  --color-danger: #ff3b30;
+  --color-info: #007aff;
 
-  --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.04), 0 4px 12px rgba(0, 0, 0, 0.04);
-  --shadow-card: 0 2px 4px rgba(0, 0, 0, 0.04), 0 8px 24px rgba(0, 0, 0, 0.06);
-  --shadow-float: 0 4px 8px rgba(0, 0, 0, 0.05), 0 16px 40px rgba(0, 0, 0, 0.08);
+  /* ---- 阴影（三层深度） ---- */
+  --shadow-soft: 0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow-card: 0 4px 6px rgba(0, 0, 0, 0.04), 0 10px 24px rgba(0, 0, 0, 0.06);
+  --shadow-float: 0 8px 16px rgba(0, 0, 0, 0.06), 0 24px 48px rgba(0, 0, 0, 0.08);
 
+  /* ---- 动效曲线 ---- */
+  --ease-decel: cubic-bezier(0.22, 1, 0.36, 1);
+
+  /* ---- 字体 ---- */
   --font-sans: "FrexSansGB", ui-sans-serif, system-ui, -apple-system, "PingFang SC",
     "Microsoft YaHei", "Hiragino Sans GB", "Source Han Sans SC", "Noto Sans CJK SC", sans-serif;
+  --font-mono: "SF Mono", "Fira Code", "Cascadia Code", ui-monospace, monospace;
 }
 
 .dark {
   --color-app: #000000;
-  --color-surface: rgba(28, 28, 30, 0.72);
+  --color-surface: rgba(28, 28, 30, 0.78);
   --color-surface-solid: #1c1c1e;
-  --color-elevated: rgba(44, 44, 46, 0.88);
+  --color-elevated: rgba(44, 44, 46, 0.92);
 
   --color-ink: #f5f5f7;
-  --color-ink-2: #d4d4d8;
-  --color-ink-3: #a1a1aa;
+  --color-ink-2: #a1a1aa;
+  --color-ink-3: #636366;
 
-  --color-line: rgba(255, 255, 255, 0.10);
-  --color-line-strong: rgba(255, 255, 255, 0.18);
+  --color-line: rgba(255, 255, 255, 0.08);
+  --color-line-strong: rgba(255, 255, 255, 0.16);
 
-  --color-accent: #2dd4bf;
-  --color-accent-hover: #14b8a6;
-  --color-accent-soft: rgba(45, 212, 191, 0.18);
+  --color-accent: #0a84ff;
+  --color-accent-hover: #409cff;
+  --color-accent-soft: rgba(10, 132, 255, 0.16);
 
-  --color-success: #4ade80;
-  --color-warning: #fbbf24;
-  --color-danger: #fb7185;
-  --color-info: #60a5fa;
+  --color-success: #30d158;
+  --color-warning: #ff9f0a;
+  --color-danger: #ff453a;
+  --color-info: #0a84ff;
 
-  --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.30), 0 4px 12px rgba(0, 0, 0, 0.30);
-  --shadow-card: 0 2px 4px rgba(0, 0, 0, 0.30), 0 8px 24px rgba(0, 0, 0, 0.42);
-  --shadow-float: 0 4px 8px rgba(0, 0, 0, 0.40), 0 16px 40px rgba(0, 0, 0, 0.55);
+  --shadow-soft: 0 1px 3px rgba(0, 0, 0, 0.24), 0 1px 2px rgba(0, 0, 0, 0.30);
+  --shadow-card: 0 4px 6px rgba(0, 0, 0, 0.30), 0 10px 24px rgba(0, 0, 0, 0.40);
+  --shadow-float: 0 8px 16px rgba(0, 0, 0, 0.40), 0 24px 48px rgba(0, 0, 0, 0.50);
 }
 
 :root {
@@ -144,12 +157,17 @@
     background: var(--color-app);
     color: var(--color-ink);
     font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.5;
+    font-weight: 400;
     -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
     text-rendering: optimizeLegibility;
   }
 
   a {
     text-decoration: none;
+    color: inherit;
   }
 
   :focus-visible {
@@ -157,24 +175,31 @@
     outline-offset: 2px;
     border-radius: 0.5rem;
   }
+
+  ::selection {
+    background: var(--color-accent-soft);
+    color: var(--color-accent);
+  }
 }
 
 /* ============================================================
-   组件层：保留现有类（field-input / control-button），
-   改为消费 token 并适配双主题
+   组件层 — 消费 Token 并适配双主题
    ============================================================ */
 @layer components {
+  /* ---- 表单输入 ---- */
   .field-input {
     width: 100%;
-    border-radius: 0.625rem;
+    border-radius: 10px;
     border: 1px solid var(--color-line-strong);
     background: var(--color-surface-solid);
-    padding: 0.625rem 0.75rem;
+    padding: 10px 12px;
     color: var(--color-ink);
+    font-family: var(--font-sans);
     font-size: 0.875rem;
+    font-weight: 400;
     line-height: 1.25rem;
     outline: none;
-    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    transition: border-color 0.2s var(--ease-decel), box-shadow 0.2s var(--ease-decel);
   }
 
   .field-input::placeholder {
@@ -186,23 +211,25 @@
     box-shadow: 0 0 0 3px var(--color-accent-soft);
   }
 
+  /* ---- 控制按钮（兼容旧代码，逐步迁移到 Button 组件） ---- */
   .control-button {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 0.375rem;
-    min-height: 2.25rem;
-    border-radius: 0.625rem;
+    gap: 6px;
+    min-height: 36px;
+    border-radius: 12px;
     border: 1px solid var(--color-line-strong);
     background: var(--color-surface-solid);
-    padding: 0.45rem 0.85rem;
+    padding: 7px 14px;
     color: var(--color-ink-2);
+    font-family: var(--font-sans);
     font-size: 0.8125rem;
-    font-weight: 600;
+    font-weight: 500;
     line-height: 1rem;
     cursor: pointer;
-    transition: background-color 0.18s ease, border-color 0.18s ease, transform 0.12s ease,
-      box-shadow 0.18s ease;
+    transition: background-color 0.2s var(--ease-decel), border-color 0.2s var(--ease-decel),
+      transform 0.12s var(--ease-decel), box-shadow 0.2s var(--ease-decel);
   }
 
   .control-button:hover:not(:disabled) {
@@ -231,18 +258,84 @@
   }
 
   .control-button.danger:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--color-danger) 10%, transparent);
+    background: color-mix(in srgb, var(--color-danger) 8%, transparent);
   }
 
   .control-button:disabled {
     cursor: not-allowed;
-    opacity: 0.5;
+    opacity: 0.45;
+  }
+
+  /* ---- 骨架屏 shimmer ---- */
+  .skeleton-shimmer {
+    background: linear-gradient(
+      90deg,
+      var(--color-surface-solid) 25%,
+      var(--color-elevated) 50%,
+      var(--color-surface-solid) 75%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 2s infinite var(--ease-decel);
+  }
+}
+
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* ============================================================
+   工具层 — 排版 utility classes
+   ============================================================ */
+@layer utilities {
+  .text-page-title {
+    font-size: 1.375rem;
+    line-height: 1.25;
+    font-weight: 600;
+  }
+
+  .text-section-title {
+    font-size: 0.9375rem;
+    line-height: 1.3;
+    font-weight: 600;
+  }
+
+  .text-card-title {
+    font-size: 0.9375rem;
+    line-height: 1.4;
+    font-weight: 600;
+  }
+
+  .text-metric {
+    font-size: 1.625rem;
+    line-height: 1.15;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .text-label {
+    font-size: 0.75rem;
+    line-height: 1.3;
+    font-weight: 500;
+  }
+
+  .text-caption {
+    font-size: 0.8125rem;
+    line-height: 1.4;
+    font-weight: 400;
+  }
+
+  .text-mono {
+    font-family: var(--font-mono);
+    font-size: 0.8125rem;
+    line-height: 1.5;
+    font-weight: 400;
   }
 }
 
 /* ============================================================
-   可访问性：尊重系统“减少动态效果”
-   （Framer Motion 的 JS 动画由 MotionConfig reducedMotion="user" 控制）
+   可访问性 — 尊重系统"减少动态效果"
+   Framer Motion 由 MotionConfig reducedMotion="user" 控制
    ============================================================ */
 @media (prefers-reduced-motion: reduce) {
   *,

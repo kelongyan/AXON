@@ -13,7 +13,7 @@ export function Field({
 }) {
   return (
     <label className={cn("block", className)}>
-      <span className="text-xs font-semibold uppercase tracking-wide text-ink-3">{label}</span>
+      <span className="text-label text-ink-2">{label}</span>
       <div className="mt-1.5">{children}</div>
     </label>
   );
