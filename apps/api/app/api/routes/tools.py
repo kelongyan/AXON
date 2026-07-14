@@ -6,7 +6,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.api.routes.agents import get_request_context
+from app.api.dependencies import get_request_context
 from app.db.session import get_session
 from app.schemas.tools import (
     ToolCallListResponse,
@@ -164,4 +164,3 @@ def invoke_tool(
         output=output,
         tool_call=tools.tool_call_response(call),
     )
-

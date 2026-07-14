@@ -68,7 +68,7 @@ export function ToolsConsole() {
   );
   const selectedAgent = useMemo(
     () => agents.find((agent) => agent.id === selectedAgentId) ?? null,
-    [agents, selectedAgentId],
+    [selectedAgentId, agents],
   );
 
   useEffect(() => {
@@ -180,48 +180,26 @@ export function ToolsConsole() {
 
       {message ? <MessageBanner message={message} /> : null}
 
-      <section className="grid gap-5 xl:grid-cols-[280px_minmax(0,1fr)]">
-        {/* Left column: Tool list */}
-        <Card className="overflow-hidden">
-          <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3">
-            <div>
-              <div className="text-sm font-semibold text-ink">注册表</div>
-              <div className="mt-1 text-xs text-ink-3">{tools.length} 个工具</div>
+      <section className="grid gap-5 xl:grid-cols-[260px_minmax(0,1fr)]">
+        {/* Left column: actions only */}
+        <Card className="space-y-4 self-start p-4">
+          <h2 className="text-sm font-semibold text-ink">操作</h2>
+          <Button variant="primary" disabled={busy} onClick={handleSeed} type="button" className="w-full">
+            初始化内置工具
+          </Button>
+          <div className="grid grid-cols-2 gap-2 text-center">
+            <div className="rounded-xl bg-surface-solid px-3 py-2">
+              <div className="text-xs text-ink-3">已注册</div>
+              <div className="mt-0.5 text-lg font-semibold text-ink">{tools.length}</div>
             </div>
-            <Button variant="primary" disabled={busy} onClick={handleSeed} type="button">
-              初始化
-            </Button>
-          </div>
-          <div className="max-h-[680px] overflow-auto p-2">
-            {tools.length === 0 ? (
-              <div className="px-3 py-6 text-sm text-ink-3">请先初始化内置工具</div>
-            ) : (
-              tools.map((tool) => (
-                <ListItem
-                  key={tool.id}
-                  selected={selectedToolId === tool.id}
-                  title={tool.display_name}
-                  subtitle={
-                    <>
-                      {tool.name}{" "}
-                      <StatusPill
-                        value={statusLabel(tool.risk_level)}
-                        tone={riskTone(tool.risk_level)}
-                        size="sm"
-                      />
-                    </>
-                  }
-                  badge={
-                    <span className="text-xs text-ink-3">{statusLabel(tool.status)}</span>
-                  }
-                  onClick={() => setSelectedToolId(tool.id)}
-                />
-              ))
-            )}
+            <div className="rounded-xl bg-surface-solid px-3 py-2">
+              <div className="text-xs text-ink-3">调用记录</div>
+              <div className="mt-0.5 text-lg font-semibold text-ink">{calls.length}</div>
+            </div>
           </div>
         </Card>
 
-        {/* Right column: detail area */}
+        {/* Right column: detail tabs + tool list */}
         <div className="space-y-5">
           {/* Tool header */}
           <Card className="p-5">
@@ -386,7 +364,7 @@ export function ToolsConsole() {
                   刷新
                 </Button>
               </div>
-              <div className="mt-4 max-h-[720px] space-y-2 overflow-auto">
+              <div className="mt-4 max-h-[520px] space-y-2 overflow-auto">
                 {calls.length ? (
                   calls.map((call) => (
                     <div className="rounded-xl border border-line px-3 py-2 text-sm" key={call.id}>
@@ -417,6 +395,46 @@ export function ToolsConsole() {
               </div>
             </Card>
           ) : null}
+
+          {/* Tool list moved below tabs */}
+          <Card className="overflow-hidden">
+            <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3">
+              <div>
+                <div className="text-sm font-semibold text-ink">注册表</div>
+                <div className="mt-1 text-xs text-ink-3">{tools.length} 个工具</div>
+              </div>
+              <Button variant="primary" disabled={busy} onClick={handleSeed} type="button">
+                初始化
+              </Button>
+            </div>
+            <div className="max-h-[360px] overflow-auto p-2">
+              {tools.length === 0 ? (
+                <div className="px-3 py-6 text-sm text-ink-3">请先初始化内置工具</div>
+              ) : (
+                tools.map((tool) => (
+                  <ListItem
+                    key={tool.id}
+                    selected={selectedToolId === tool.id}
+                    title={tool.display_name}
+                    subtitle={
+                      <>
+                        {tool.name}{" "}
+                        <StatusPill
+                          value={statusLabel(tool.risk_level)}
+                          tone={riskTone(tool.risk_level)}
+                          size="sm"
+                        />
+                      </>
+                    }
+                    badge={
+                      <span className="text-xs text-ink-3">{statusLabel(tool.status)}</span>
+                    }
+                    onClick={() => setSelectedToolId(tool.id)}
+                  />
+                ))
+              )}
+            </div>
+          </Card>
         </div>
       </section>
     </div>

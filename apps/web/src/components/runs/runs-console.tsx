@@ -218,67 +218,24 @@ export function RunsConsole() {
 
       {message ? <MessageBanner message={message} /> : null}
 
-      {/* Two-column layout */}
-      <section className="grid gap-5 xl:grid-cols-[320px_minmax(0,1fr)]">
-        {/* Left: Run list */}
-        <Card className="overflow-hidden">
-          <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3">
-            <div>
-              <div className="text-sm font-semibold text-ink">运行列表</div>
-              <div className="mt-0.5 text-xs text-ink-3">{runs.length} 条近期运行</div>
-            </div>
-            <Button variant="default" disabled={busy} onClick={() => void loadRuns()} type="button">
-              刷新
+      <section className="grid gap-5 xl:grid-cols-[260px_minmax(0,1fr)]">
+        {/* Left column: actions and highlights */}
+        <div className="space-y-5">
+          <Card className="space-y-4 self-start p-4">
+            <h2 className="text-sm font-semibold text-ink">操作</h2>
+            <Button variant="default" disabled={busy} onClick={() => void loadRuns()} type="button" className="w-full">
+              刷新运行列表
             </Button>
-          </div>
-          <div className="max-h-[720px] overflow-auto">
-            {runs.length === 0 ? (
-              <div className="px-4 py-8 text-sm text-ink-3">暂无运行记录</div>
-            ) : (
-              runs.map((run) => (
-                <ListItem
-                  key={run.id}
-                  selected={selectedRunId === run.id}
-                  title={
-                    <span className="flex items-center gap-2">
-                      <span
-                        className={`inline-block h-2 w-2 rounded-full ${
-                          statusTone(run.status) === "success"
-                            ? "bg-success"
-                            : statusTone(run.status) === "warning"
-                              ? "bg-warning"
-                              : statusTone(run.status) === "danger"
-                                ? "bg-danger"
-                                : statusTone(run.status) === "info"
-                                  ? "bg-info"
-                                  : "bg-ink-3"
-                        }`}
-                        aria-hidden
-                      />
-                      {shortId(run.id)}
-                    </span>
-                  }
-                  subtitle={
-                    <span className="flex items-center gap-2">
-                      <span>{String(run.input.topic ?? "No topic")}</span>
-                      <span>·</span>
-                      <span>{run.steps.length} steps</span>
-                    </span>
-                  }
-                  badge={
-                    <span className={`text-xs font-medium ${statusTextClass(run.status)}`}>
-                      {statusLabel(run.status)}
-                    </span>
-                  }
-                  onClick={() => setSelectedRunId(run.id)}
-                  className={statusBorderClass(run.status)}
-                />
-              ))
-            )}
-          </div>
-        </Card>
+            {pendingApprovals.length ? (
+              <div className="rounded-xl border border-warning/30 bg-warning/5 p-3">
+                <div className="text-xs font-semibold text-warning">{pendingApprovals.length} 个待审批</div>
+                <p className="mt-1 text-xs text-ink-3">详情见右侧运行记录</p>
+              </div>
+            ) : null}
+          </Card>
+        </div>
 
-        {/* Right: Detail area */}
+        {/* Right column: detail + run list */}
         <div className="space-y-5">
           {/* Detail header */}
           <Card className="p-5">
@@ -350,7 +307,7 @@ export function RunsConsole() {
 
           {/* Metrics row */}
           {detail ? (
-            <div className="grid gap-3 grid-cols-2 lg:grid-cols-4">
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
               <MetricCard>
                 <div className="text-xs text-ink-3">状态</div>
                 <div className={`mt-1 text-lg font-semibold ${statusTextClass(detail.status)}`}>
@@ -518,6 +475,64 @@ export function RunsConsole() {
               <div className="text-sm text-ink-3">暂无链路事件</div>
             )}
           </CollapsibleSection>
+
+          {/* Run list moved below detail */}
+          <Card className="overflow-hidden">
+            <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3">
+              <div>
+                <div className="text-sm font-semibold text-ink">运行列表</div>
+                <div className="mt-0.5 text-xs text-ink-3">{runs.length} 条近期运行</div>
+              </div>
+              <Button variant="default" disabled={busy} onClick={() => void loadRuns()} type="button">
+                刷新
+              </Button>
+            </div>
+            <div className="max-h-[360px] overflow-auto">
+              {runs.length === 0 ? (
+                <div className="px-4 py-8 text-sm text-ink-3">暂无运行记录</div>
+              ) : (
+                runs.map((run) => (
+                  <ListItem
+                    key={run.id}
+                    selected={selectedRunId === run.id}
+                    title={
+                      <span className="flex items-center gap-2">
+                        <span
+                          className={`inline-block h-2 w-2 rounded-full ${
+                            statusTone(run.status) === "success"
+                              ? "bg-success"
+                              : statusTone(run.status) === "warning"
+                                ? "bg-warning"
+                                : statusTone(run.status) === "danger"
+                                  ? "bg-danger"
+                                  : statusTone(run.status) === "info"
+                                    ? "bg-info"
+                                    : "bg-ink-3"
+                          }`}
+                          aria-hidden
+                        />
+                        {shortId(run.id)}
+                      </span>
+                    }
+                    subtitle={
+                      <span className="flex items-center gap-2">
+                        <span>{String(run.input.topic ?? "No topic")}</span>
+                        <span>·</span>
+                        <span>{run.steps.length} steps</span>
+                      </span>
+                    }
+                    badge={
+                      <span className={`text-xs font-medium ${statusTextClass(run.status)}`}>
+                        {statusLabel(run.status)}
+                      </span>
+                    }
+                    onClick={() => setSelectedRunId(run.id)}
+                    className={statusBorderClass(run.status)}
+                  />
+                ))
+              )}
+            </div>
+          </Card>
         </div>
       </section>
     </div>

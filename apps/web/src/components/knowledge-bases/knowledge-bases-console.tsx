@@ -188,78 +188,64 @@ export function KnowledgeBasesConsole() {
 
       {message ? <MessageBanner message={message} /> : null}
 
-      <section className="grid gap-5 xl:grid-cols-[280px_minmax(0,1fr)]">
-        {/* Left column: KB list */}
-        <Card className="overflow-hidden">
-          <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3">
+      <section className="grid gap-5 xl:grid-cols-[320px_minmax(0,1fr)]">
+        {/* Left column: create form only */}
+        <Card as="form" className="space-y-5 self-start p-5" onSubmit={handleCreate}>
+          <div className="flex flex-col gap-3 border-b border-line pb-4 md:flex-row md:items-center md:justify-between">
             <div>
-              <div className="text-sm font-semibold text-ink">知识库列表</div>
-              <div className="mt-1 text-xs text-ink-3">{knowledgeBases.length} 个已配置</div>
+              <h2 className="text-base font-semibold text-ink">新建知识库</h2>
+              <p className="mt-1 text-sm text-ink-3">{detail?.embedding_model ?? "服务端默认嵌入模型"}</p>
             </div>
-            <Button variant="default" disabled={busy} onClick={() => void loadInitialData()} type="button">
-              刷新
+            <Button variant="primary" disabled={busy} type="submit">
+              创建
             </Button>
           </div>
-          <div className="max-h-[700px] overflow-auto p-2">
-            {knowledgeBases.length === 0 ? (
-              <div className="px-3 py-6 text-sm text-ink-3">Create a knowledge base to start</div>
-            ) : (
-              knowledgeBases.map((knowledgeBase) => (
-                <ListItem
-                  key={knowledgeBase.id}
-                  selected={selectedKnowledgeBaseId === knowledgeBase.id}
-                  title={knowledgeBase.name}
-                  subtitle={`${knowledgeBase.document_count} 篇文档 · ${knowledgeBase.chunk_count} 个分块`}
-                  badge={
-                    <span className="text-xs text-ink-3">{statusLabel(knowledgeBase.status)}</span>
-                  }
-                  onClick={() => setSelectedKnowledgeBaseId(knowledgeBase.id)}
-                />
-              ))
-            )}
+
+          <div className="space-y-4">
+            <Field label="名称">
+              <input
+                className="field-input"
+                onChange={(event) => setKnowledgeBaseForm({ ...knowledgeBaseForm, name: event.target.value })}
+                value={knowledgeBaseForm.name}
+              />
+            </Field>
+            <Field label="嵌入模型">
+              <input
+                className="field-input"
+                onChange={(event) =>
+                  setKnowledgeBaseForm({ ...knowledgeBaseForm, embeddingModel: event.target.value })
+                }
+                value={knowledgeBaseForm.embeddingModel}
+              />
+            </Field>
+            <Field label="描述">
+              <input
+                className="field-input"
+                onChange={(event) =>
+                  setKnowledgeBaseForm({ ...knowledgeBaseForm, description: event.target.value })
+                }
+                value={knowledgeBaseForm.description}
+              />
+            </Field>
           </div>
         </Card>
 
-        {/* Right column: detail area */}
+        {/* Right column: detail tabs + KB list */}
         <div className="space-y-5">
-          {/* Create / config form */}
-          <Card as="form" className="space-y-5 p-5" onSubmit={handleCreate}>
-            <div className="flex flex-col gap-3 border-b border-line pb-4 md:flex-row md:items-center md:justify-between">
+          {/* Current KB header */}
+          <Card className="p-5">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div>
-                <h2 className="text-base font-semibold text-ink">配置</h2>
-                <p className="mt-1 text-sm text-ink-3">{detail?.embedding_model ?? "服务端默认嵌入模型"}</p>
+                <h2 className="text-base font-semibold text-ink">{selectedKnowledgeBase?.name ?? "请选择知识库"}</h2>
+                <p className="mt-1 text-sm text-ink-3">
+                  {selectedKnowledgeBase
+                    ? `${selectedKnowledgeBase.document_count} 篇文档 · ${selectedKnowledgeBase.chunk_count} 个分块`
+                    : "未选择知识库"}
+                </p>
               </div>
-              <Button variant="primary" disabled={busy} type="submit">
-                创建
-              </Button>
-            </div>
-
-            <div className="grid gap-4 md:grid-cols-2">
-              <Field label="名称">
-                <input
-                  className="field-input"
-                  onChange={(event) => setKnowledgeBaseForm({ ...knowledgeBaseForm, name: event.target.value })}
-                  value={knowledgeBaseForm.name}
-                />
-              </Field>
-              <Field label="嵌入模型">
-                <input
-                  className="field-input"
-                  onChange={(event) =>
-                    setKnowledgeBaseForm({ ...knowledgeBaseForm, embeddingModel: event.target.value })
-                  }
-                  value={knowledgeBaseForm.embeddingModel}
-                />
-              </Field>
-              <Field className="md:col-span-2" label="描述">
-                <input
-                  className="field-input"
-                  onChange={(event) =>
-                    setKnowledgeBaseForm({ ...knowledgeBaseForm, description: event.target.value })
-                  }
-                  value={knowledgeBaseForm.description}
-                />
-              </Field>
+              {selectedKnowledgeBase ? (
+                <span className="text-xs text-ink-3">{statusLabel(selectedKnowledgeBase.status)}</span>
+              ) : null}
             </div>
           </Card>
 
@@ -455,6 +441,37 @@ export function KnowledgeBasesConsole() {
               </div>
             </Card>
           ) : null}
+
+          {/* Knowledge base list moved below tabs */}
+          <Card className="overflow-hidden">
+            <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3">
+              <div>
+                <div className="text-sm font-semibold text-ink">知识库列表</div>
+                <div className="mt-1 text-xs text-ink-3">{knowledgeBases.length} 个已配置</div>
+              </div>
+              <Button variant="default" disabled={busy} onClick={() => void loadInitialData()} type="button">
+                刷新
+              </Button>
+            </div>
+            <div className="max-h-[360px] overflow-auto p-2">
+              {knowledgeBases.length === 0 ? (
+                <div className="px-3 py-6 text-sm text-ink-3">Create a knowledge base to start</div>
+              ) : (
+                knowledgeBases.map((knowledgeBase) => (
+                  <ListItem
+                    key={knowledgeBase.id}
+                    selected={selectedKnowledgeBaseId === knowledgeBase.id}
+                    title={knowledgeBase.name}
+                    subtitle={`${knowledgeBase.document_count} 篇文档 · ${knowledgeBase.chunk_count} 个分块`}
+                    badge={
+                      <span className="text-xs text-ink-3">{statusLabel(knowledgeBase.status)}</span>
+                    }
+                    onClick={() => setSelectedKnowledgeBaseId(knowledgeBase.id)}
+                  />
+                ))
+              )}
+            </div>
+          </Card>
         </div>
       </section>
     </div>

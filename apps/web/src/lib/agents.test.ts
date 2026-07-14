@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { parseApiError } from "./api-client";
-import { buildAgentPayload, buildVersionPayload } from "./agents";
+import { buildAgentPayload, buildVersionPayload } from "../features/agents";
 
 const formValues = {
   name: "  Researcher Agent  ",

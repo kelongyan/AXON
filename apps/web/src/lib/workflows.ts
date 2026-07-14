@@ -170,6 +170,8 @@ export type RunCostSummary = {
   totalLatencyMs: number;
 };
 
+type RunCostCall = Pick<RunLlmCall, "total_tokens" | "prompt_tokens" | "completion_tokens" | "latency_ms">;
+
 export type RunRuntimeSummary = {
   worker: string;
   leaseExpiresAt: string;
@@ -331,7 +333,7 @@ function parseJsonObject(value: string, label: string): Record<string, unknown> 
   return parsed as Record<string, unknown>;
 }
 
-export function formatRunCostSummary(run: Pick<WorkflowRun, "llm_calls">): RunCostSummary {
+export function formatRunCostSummary(run: { llm_calls: RunCostCall[] }): RunCostSummary {
   return run.llm_calls.reduce(
     (summary, call) => ({
       totalTokens: summary.totalTokens + (call.total_tokens ?? 0),

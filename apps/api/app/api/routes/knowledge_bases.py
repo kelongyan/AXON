@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, File, Form, Request, UploadFile, status
 from fastapi.exceptions import HTTPException
 from sqlalchemy.orm import Session
 
-from app.api.routes.agents import get_request_context
+from app.api.dependencies import get_request_context
 from app.db.session import get_session
 from app.schemas.knowledge_bases import (
     DocumentCreate,

@@ -16,7 +16,7 @@ import {
   fetchMe,
   publishAgentVersion,
   runAgentTest,
-} from "@/lib/agents";
+} from "@/features/agents";
 import { cn } from "@/lib/cn";
 import { errorMessage } from "@/lib/error-message";
 import { statusLabel } from "@/lib/status-label";
@@ -207,49 +207,55 @@ export function AgentsConsole() {
 
       {message ? <MessageBanner message={message} /> : null}
 
-      {/* Two-column layout */}
-      <section className="grid gap-5 xl:grid-cols-[280px_minmax(0,1fr)]">
-        {/* Left column: Agent list */}
-        <Card className="overflow-hidden">
-          <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3">
-            <div>
-              <div className="text-sm font-semibold text-ink">智能体列表</div>
-              <div className="mt-1 text-xs text-ink-3">{agents.length} 个已配置</div>
-            </div>
+      <section className="grid gap-5 xl:grid-cols-[260px_minmax(0,1fr)]">
+        {/* Left column: actions only */}
+        <div className="space-y-5">
+          <Card className="space-y-4 p-4">
+            <h2 className="text-sm font-semibold text-ink">操作</h2>
             <Button
-              variant="secondary"
+              variant="primary"
               disabled={busy}
               onClick={() => setCreateModalOpen(true)}
               type="button"
+              className="w-full"
             >
-              创建
+              创建智能体
             </Button>
-          </div>
-          <div className="max-h-[620px] overflow-auto p-2">
-            {agents.length === 0 ? (
-              <div className="px-3 py-6 text-sm text-ink-3">暂无智能体</div>
-            ) : (
-              agents.map((agent) => (
-                <ListItem
-                  key={agent.id}
-                  selected={selectedAgentId === agent.id}
-                  title={agent.name}
-                  subtitle={
-                    <>
-                      v{agent.current_version?.version_number ?? "-"} ·{" "}
-                      {agent.current_version?.model_name ?? "未配置模型"}
-                    </>
-                  }
-                  badge={<span className="text-xs">{statusLabel(agent.status)}</span>}
-                  onClick={() => setSelectedAgentId(agent.id)}
-                />
-              ))
-            )}
-          </div>
-        </Card>
+            <div className="grid grid-cols-2 gap-2 text-center">
+              <div className="rounded-xl bg-surface-solid px-3 py-2">
+                <div className="text-xs text-ink-3">已配置</div>
+                <div className="mt-0.5 text-lg font-semibold text-ink">{agents.length}</div>
+              </div>
+              <div className="rounded-xl bg-surface-solid px-3 py-2">
+                <div className="text-xs text-ink-3">当前版本</div>
+                <div className="mt-0.5 text-lg font-semibold text-ink">
+                  {selectedAgent?.current_version?.version_number ?? "-"}
+                </div>
+              </div>
+            </div>
+          </Card>
+        </div>
 
-        {/* Right column: Tab-switched content */}
-        <div className="min-w-0">
+        {/* Right column: detail tabs + agent list */}
+        <div className="min-w-0 space-y-5">
+          {/* Current agent header */}
+          <Card className="p-5">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div>
+                <h2 className="text-base font-semibold text-ink">{selectedAgent?.name ?? "请选择智能体"}</h2>
+                <p className="mt-1 text-sm text-ink-3">
+                  {selectedAgent
+                    ? `${statusLabel(selectedAgent.status)} · ${selectedAgent.current_version?.model_name ?? "未配置模型"}`
+                    : "未选择智能体"}
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2 text-xs">
+                <StatusPill label="版本" value={`v${selectedAgent?.current_version?.version_number ?? "-"}`} tone="neutral" />
+                <StatusPill status={selectedAgent?.status} tone={statusLabel(selectedAgent?.status) as never} size="sm" />
+              </div>
+            </div>
+          </Card>
+
           {/* Tab bar */}
           <div className="flex gap-1 border-b border-line">
             {tabs.map((tab) => (
@@ -270,7 +276,7 @@ export function AgentsConsole() {
           </div>
 
           {/* Tab panels */}
-          <div className="mt-5">
+          <div>
             {/* 配置 tab */}
             {activeTab === "config" && (
               <Card className="p-5">
@@ -448,6 +454,45 @@ export function AgentsConsole() {
               </Card>
             )}
           </div>
+
+          {/* Agent list moved below tabs */}
+          <Card className="overflow-hidden">
+            <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3">
+              <div>
+                <div className="text-sm font-semibold text-ink">智能体列表</div>
+                <div className="mt-1 text-xs text-ink-3">{agents.length} 个已配置</div>
+              </div>
+              <Button
+                variant="secondary"
+                disabled={busy}
+                onClick={() => setCreateModalOpen(true)}
+                type="button"
+              >
+                创建
+              </Button>
+            </div>
+            <div className="max-h-[360px] overflow-auto p-2">
+              {agents.length === 0 ? (
+                <div className="px-3 py-6 text-sm text-ink-3">暂无智能体</div>
+              ) : (
+                agents.map((agent) => (
+                  <ListItem
+                    key={agent.id}
+                    selected={selectedAgentId === agent.id}
+                    title={agent.name}
+                    subtitle={
+                      <>
+                        v{agent.current_version?.version_number ?? "-"} ·{" "}
+                        {agent.current_version?.model_name ?? "未配置模型"}
+                      </>
+                    }
+                    badge={<span className="text-xs">{statusLabel(agent.status)}</span>}
+                    onClick={() => setSelectedAgentId(agent.id)}
+                  />
+                ))
+              )}
+            </div>
+          </Card>
         </div>
       </section>
 

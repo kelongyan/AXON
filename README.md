@@ -6,6 +6,8 @@ AXON 是一个以 **Agent 编排、工具调用、知识库增强、流程治理
 
 当前项目全程通过 **大模型 API** 使用模型能力，支持 OpenAI 兼容格式的模型提供商；暂不做本地模型部署、GPU 推理容器、模型权重管理或本地推理服务集成。
 
+命名约定：**AXON** 是用户可见的产品名；`AgentFlow` / `agentflow` 暂作为内部包名、环境变量前缀、数据库名与 HTTP Header 前缀保留，避免无收益的大范围迁移。
+
 ## ✦ 核心能力
 
 | 模块 | 能力 |
@@ -48,7 +50,7 @@ docker compose up --build
 
 | 服务 | 地址 |
 | --- | --- |
-| AXON Console | `http://localhost:3000` |
+| AXON Console | `http://localhost:5180` |
 | API Health | `http://localhost:8000/health` |
 | API Readiness | `http://localhost:8000/health/ready` |
 | MinIO Console | `http://localhost:9001` |

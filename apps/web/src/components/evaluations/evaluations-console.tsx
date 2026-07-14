@@ -126,94 +126,60 @@ export function EvaluationsConsole() {
 
       {message ? <MessageBanner message={message} /> : null}
 
-      <section className="grid gap-5 xl:grid-cols-[280px_minmax(0,1fr)]">
-        {/* Left column: Evaluation list + create form */}
-        <div className="space-y-5">
-          {/* Create form */}
-          <Card as="form" className="space-y-4 p-4" onSubmit={handleCreate}>
-            <div className="flex items-center justify-between gap-3">
-              <h2 className="text-base font-semibold text-ink">新建评估</h2>
-              <Button variant="primary" disabled={busy || !formValues.workflowId} type="submit">
-                创建
-              </Button>
-            </div>
-            <Field label="Workflow">
-              <select
-                className="field-input"
-                onChange={(event) => setFormValues({ ...formValues, workflowId: event.target.value })}
-                value={formValues.workflowId}
-              >
-                <option value="">请选择已发布的工作流</option>
-                {workflows.map((workflow) => (
-                  <option disabled={!workflow.current_version_id} key={workflow.id} value={workflow.id}>
-                    {workflow.name}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Field label="Name">
-              <input
-                className="field-input"
-                onChange={(event) => setFormValues({ ...formValues, name: event.target.value })}
-                value={formValues.name}
-              />
-            </Field>
-            <Field label="Description">
-              <textarea
-                className="field-input min-h-20 resize-y"
-                onChange={(event) => setFormValues({ ...formValues, description: event.target.value })}
-                value={formValues.description}
-              />
-            </Field>
-            <Field label="Token Price / 1K">
-              <input
-                className="field-input"
-                onChange={(event) => setFormValues({ ...formValues, tokenPricePer1k: event.target.value })}
-                value={formValues.tokenPricePer1k}
-              />
-            </Field>
-            <Field label="Cases JSON">
-              <textarea
-                className="field-input min-h-64 resize-y font-mono"
-                onChange={(event) => setFormValues({ ...formValues, casesText: event.target.value })}
-                value={formValues.casesText}
-              />
-            </Field>
-          </Card>
+      <section className="grid gap-5 xl:grid-cols-[320px_minmax(0,1fr)]">
+        {/* Left column: Create form only */}
+        <Card as="form" className="space-y-4 self-start p-4" onSubmit={handleCreate}>
+          <div className="flex items-center justify-between gap-3">
+            <h2 className="text-base font-semibold text-ink">新建评估</h2>
+            <Button variant="primary" disabled={busy || !formValues.workflowId} type="submit">
+              创建
+            </Button>
+          </div>
+          <Field label="Workflow">
+            <select
+              className="field-input"
+              onChange={(event) => setFormValues({ ...formValues, workflowId: event.target.value })}
+              value={formValues.workflowId}
+            >
+              <option value="">请选择已发布的工作流</option>
+              {workflows.map((workflow) => (
+                <option disabled={!workflow.current_version_id} key={workflow.id} value={workflow.id}>
+                  {workflow.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Name">
+            <input
+              className="field-input"
+              onChange={(event) => setFormValues({ ...formValues, name: event.target.value })}
+              value={formValues.name}
+            />
+          </Field>
+          <Field label="Description">
+            <textarea
+              className="field-input min-h-20 resize-y"
+              onChange={(event) => setFormValues({ ...formValues, description: event.target.value })}
+              value={formValues.description}
+            />
+          </Field>
+          <Field label="Token Price / 1K">
+            <input
+              className="field-input"
+              onChange={(event) => setFormValues({ ...formValues, tokenPricePer1k: event.target.value })}
+              value={formValues.tokenPricePer1k}
+            />
+          </Field>
+          <Field label="Cases JSON">
+            <textarea
+              className="field-input min-h-64 resize-y font-mono"
+              onChange={(event) => setFormValues({ ...formValues, casesText: event.target.value })}
+              value={formValues.casesText}
+            />
+          </Field>
+        </Card>
 
-          {/* Evaluation list */}
-          <Card className="overflow-hidden">
-            <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3">
-              <div>
-                <div className="text-sm font-semibold text-ink">评估列表</div>
-                <div className="mt-1 text-xs text-ink-3">{evaluations.length} 个已配置</div>
-              </div>
-              <Button variant="default" disabled={busy} onClick={() => void loadData()} type="button">
-                刷新
-              </Button>
-            </div>
-            <div className="max-h-[360px] overflow-auto p-2">
-              {evaluations.length === 0 ? (
-                <div className="px-3 py-6 text-sm text-ink-3">暂无评估</div>
-              ) : (
-                evaluations.map((evaluation) => (
-                  <ListItem
-                    key={evaluation.id}
-                    selected={selectedEvaluation?.id === evaluation.id}
-                    title={evaluation.name}
-                    subtitle={`${String(evaluation.summary.case_count ?? evaluation.cases.length)} 个用例 · ${String(evaluation.summary.success_count ?? 0)} 个通过`}
-                    badge={
-                      <span className="text-xs text-ink-3">{statusLabel(evaluation.status)}</span>
-                    }
-                    onClick={() => setSelectedEvaluationId(evaluation.id)}
-                  />
-                ))
-              )}
-            </div>
-          </Card>
-        </div>
-
-        {/* Right column: detail area */}
+        {/* Right column: detail + list */}
         <div className="space-y-5">
           {/* Selected evaluation header */}
           <Card className="p-5">
@@ -331,6 +297,37 @@ export function EvaluationsConsole() {
               </Card>
             </div>
           ) : null}
+
+          {/* Evaluation list moved below the detail tabs */}
+          <Card className="overflow-hidden">
+            <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3">
+              <div>
+                <div className="text-sm font-semibold text-ink">评估列表</div>
+                <div className="mt-1 text-xs text-ink-3">{evaluations.length} 个已配置</div>
+              </div>
+              <Button variant="default" disabled={busy} onClick={() => void loadData()} type="button">
+                刷新
+              </Button>
+            </div>
+            <div className="max-h-[360px] overflow-auto p-2">
+              {evaluations.length === 0 ? (
+                <div className="px-3 py-6 text-sm text-ink-3">暂无评估</div>
+              ) : (
+                evaluations.map((evaluation) => (
+                  <ListItem
+                    key={evaluation.id}
+                    selected={selectedEvaluation?.id === evaluation.id}
+                    title={evaluation.name}
+                    subtitle={`${String(evaluation.summary.case_count ?? evaluation.cases.length)} 个用例 · ${String(evaluation.summary.success_count ?? 0)} 个通过`}
+                    badge={
+                      <span className="text-xs text-ink-3">{statusLabel(evaluation.status)}</span>
+                    }
+                    onClick={() => setSelectedEvaluationId(evaluation.id)}
+                  />
+                ))
+              )}
+            </div>
+          </Card>
         </div>
       </section>
     </div>
