@@ -118,7 +118,7 @@ describe("workflow helpers", () => {
     await cancelRun("run-1", "No longer needed.");
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://localhost:8000/runs/run-1/cancel",
+      "/api/agentflow/runs/run-1/cancel",
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify({ comment: "No longer needed." }),

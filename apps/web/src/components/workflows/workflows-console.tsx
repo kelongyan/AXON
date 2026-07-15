@@ -35,6 +35,7 @@ import {
   applyNodeStatuses,
   buildApprovalBuilderNode,
   buildAgentBuilderNode,
+  buildConditionBuilderNode,
   buildDefaultBuilderGraph,
   buildEndBuilderNode,
   buildRetrievalBuilderNode,
@@ -99,6 +100,7 @@ const nodeBorderColor: Record<string, string> = {
   agent: "border-l-accent",
   retrieval: "border-l-success",
   tool: "border-l-warning",
+  condition: "border-l-violet-400",
   approval: "border-l-amber-400",
   end: "border-l-ink-3",
   start: "border-l-info",
@@ -220,7 +222,7 @@ export function WorkflowsConsole() {
     setMessage("已加载可视化 开始 → 智能体 → 结束 模板");
   }
 
-  function addNode(kind: "agent" | "retrieval" | "tool" | "approval" | "end") {
+  function addNode(kind: "agent" | "retrieval" | "tool" | "condition" | "approval" | "end") {
     const offset = nodes.length * 45;
     if (kind === "agent") {
       const agentVersionId = selectedAgent?.current_version_id;
@@ -261,6 +263,16 @@ export function WorkflowsConsole() {
         toolId: selection.toolId,
         x: 480 + offset,
         y: 260,
+      });
+      setNodes((current) => [...current, node as FlowNode]);
+      setSelectedNodeId(node.id);
+      return;
+    }
+    if (kind === "condition") {
+      const node = buildConditionBuilderNode({
+        id: `node_condition_${Date.now()}`,
+        x: 520 + offset,
+        y: 80,
       });
       setNodes((current) => [...current, node as FlowNode]);
       setSelectedNodeId(node.id);
@@ -507,6 +519,9 @@ export function WorkflowsConsole() {
             </Button>
             <Button variant="ghost" disabled={busy} onClick={() => addNode("tool")} type="button">
               <Plus size={13} /> 工具
+            </Button>
+            <Button variant="ghost" disabled={busy} onClick={() => addNode("condition")} type="button">
+              <Plus size={13} /> Condition
             </Button>
             <Button variant="ghost" disabled={busy} onClick={() => addNode("approval")} type="button">
               <Plus size={13} /> 审批

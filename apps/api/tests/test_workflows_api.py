@@ -687,32 +687,68 @@ def test_publish_rejects_visual_graph_with_unreachable_node():
     assert "reachable" in response.json()["detail"]
 
 
-def test_publish_rejects_condition_node_that_is_not_executable_yet():
-    client = create_test_client()
+def test_condition_node_publishes_and_executes_only_the_selected_branch():
+    fake_llm = SequencedLLMClient(outputs=["urgent answer", "standard answer"])
+    client = create_test_client(fake_llm)
+    urgent_agent = create_agent(client, "Urgent Branch Agent")
+    standard_agent = create_agent(client, "Standard Branch Agent")
     workflow = client.post("/workflows", json={"name": "Condition Node Flow"}).json()
-    graph = {
-        "schema_version": "1.0",
-        "nodes": [
-            {"id": "node_start", "type": "start", "name": "Start", "position": {"x": 0, "y": 0}, "config": {}},
-            {
-                "id": "node_condition",
-                "type": "condition",
-                "name": "Branch",
-                "position": {"x": 280, "y": 0},
-                "config": {"conditions": []},
-            },
-            {"id": "node_end", "type": "end", "name": "End", "position": {"x": 560, "y": 0}, "config": {}},
-        ],
-        "edges": [
-            {"id": "edge_start_condition", "source": "node_start", "target": "node_condition", "type": "default"},
-            {"id": "edge_condition_end", "source": "node_condition", "target": "node_end", "type": "default"},
-        ],
+
+    publish = client.post(
+        f"/workflows/{workflow['id']}/versions",
+        json={
+            "graph": condition_graph(
+                urgent_agent["current_version_id"],
+                standard_agent["current_version_id"],
+            )
+        },
+    )
+
+    assert publish.status_code == 201
+    version = publish.json()
+    assert set(version["referenced_agent_versions"]) == {
+        urgent_agent["current_version_id"],
+        standard_agent["current_version_id"],
     }
+    assert version["node_snapshots"]["node_condition"]["conditions"][0]["target"] == "node_urgent"
 
-    response = client.post(f"/workflows/{workflow['id']}/versions", json={"graph": graph})
+    urgent_run = client.post(
+        f"/workflows/{workflow['id']}/runs",
+        json={"input": {"topic": "Incident", "priority": "urgent"}},
+    ).json()
+    urgent_response = client.post(f"/runs/{urgent_run['id']}/execute")
 
-    assert response.status_code == 422
-    assert "not executable in Phase 6 MVP" in response.json()["detail"]
+    assert urgent_response.status_code == 200
+    urgent_body = urgent_response.json()
+    assert urgent_body["status"] == "succeeded"
+    assert urgent_body["output"] == {"result": "urgent answer", "route": "urgent"}
+    assert [step["node_id"] for step in urgent_body["steps"]] == [
+        "node_start",
+        "node_condition",
+        "node_urgent",
+        "node_urgent_end",
+    ]
+    assert urgent_body["steps"][1]["output"]["selected_target"] == "node_urgent"
+    assert "condition.selected" in [event["event_type"] for event in urgent_body["trace_events"]]
+
+    standard_run = client.post(
+        f"/workflows/{workflow['id']}/runs",
+        json={"input": {"topic": "Roadmap", "priority": "normal"}},
+    ).json()
+    standard_response = client.post(f"/runs/{standard_run['id']}/execute")
+
+    assert standard_response.status_code == 200
+    standard_body = standard_response.json()
+    assert standard_body["status"] == "succeeded"
+    assert standard_body["output"] == {"result": "standard answer", "route": "standard"}
+    assert [step["node_id"] for step in standard_body["steps"]] == [
+        "node_start",
+        "node_condition",
+        "node_standard",
+        "node_standard_end",
+    ]
+    assert standard_body["steps"][1]["output"]["matched"] is False
+    assert len(fake_llm.calls) == 2
 
 
 def test_low_risk_tool_node_executes_and_records_tool_call():
@@ -1358,6 +1394,104 @@ def approval_graph(agent_version_id: str) -> dict[str, object]:
             {"id": "edge_start_approval", "source": "node_start", "target": "node_approval", "type": "default"},
             {"id": "edge_approval_agent", "source": "node_approval", "target": "node_agent", "type": "default"},
             {"id": "edge_agent_end", "source": "node_agent", "target": "node_end", "type": "default"},
+        ],
+    }
+
+
+def condition_graph(urgent_agent_version_id: str, standard_agent_version_id: str) -> dict[str, object]:
+    return {
+        "schema_version": "1.0",
+        "nodes": [
+            {
+                "id": "node_start",
+                "type": "start",
+                "name": "Start",
+                "position": {"x": 40, "y": 160},
+                "config": {
+                    "input_schema": {
+                        "type": "object",
+                        "required": ["topic", "priority"],
+                        "properties": {"topic": {"type": "string"}, "priority": {"type": "string"}},
+                    }
+                },
+            },
+            {
+                "id": "node_condition",
+                "type": "condition",
+                "name": "Priority Branch",
+                "position": {"x": 300, "y": 160},
+                "config": {
+                    "conditions": [
+                        {
+                            "id": "urgent",
+                            "label": "Urgent",
+                            "path": "$.run.input.priority",
+                            "operator": "equals",
+                            "value": "urgent",
+                            "target": "node_urgent",
+                        }
+                    ],
+                    "default_target": "node_standard",
+                },
+            },
+            {
+                "id": "node_urgent",
+                "type": "agent",
+                "name": "Urgent Agent",
+                "position": {"x": 580, "y": 40},
+                "config": {
+                    "agent_version_id": urgent_agent_version_id,
+                    "instruction": "Handle urgent requests.",
+                },
+                "input_mapping": {"topic": "$.run.input.topic", "priority": "$.run.input.priority"},
+            },
+            {
+                "id": "node_standard",
+                "type": "agent",
+                "name": "Standard Agent",
+                "position": {"x": 580, "y": 280},
+                "config": {
+                    "agent_version_id": standard_agent_version_id,
+                    "instruction": "Handle standard requests.",
+                },
+                "input_mapping": {"topic": "$.run.input.topic", "priority": "$.run.input.priority"},
+            },
+            {
+                "id": "node_urgent_end",
+                "type": "end",
+                "name": "Urgent End",
+                "position": {"x": 860, "y": 40},
+                "config": {
+                    "output_mapping": {
+                        "result": "$.steps.node_urgent.output.content",
+                        "route": "urgent",
+                    }
+                },
+            },
+            {
+                "id": "node_standard_end",
+                "type": "end",
+                "name": "Standard End",
+                "position": {"x": 860, "y": 280},
+                "config": {
+                    "output_mapping": {
+                        "result": "$.steps.node_standard.output.content",
+                        "route": "standard",
+                    }
+                },
+            },
+        ],
+        "edges": [
+            {"id": "edge_start_condition", "source": "node_start", "target": "node_condition", "type": "default"},
+            {"id": "edge_condition_urgent", "source": "node_condition", "target": "node_urgent", "type": "branch"},
+            {
+                "id": "edge_condition_standard",
+                "source": "node_condition",
+                "target": "node_standard",
+                "type": "default",
+            },
+            {"id": "edge_urgent_end", "source": "node_urgent", "target": "node_urgent_end", "type": "default"},
+            {"id": "edge_standard_end", "source": "node_standard", "target": "node_standard_end", "type": "default"},
         ],
     }
 

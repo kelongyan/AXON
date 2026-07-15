@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildApprovalBuilderNode,
+  buildConditionBuilderNode,
   buildDefaultBuilderGraph,
   buildRetrievalBuilderNode,
   buildToolBuilderNode,
@@ -41,6 +42,25 @@ describe("workflow builder helpers", () => {
       topic: "$.run.input.topic",
       audience: "$.run.input.audience",
     });
+  });
+
+  it("adds a configured condition node for branch routing", () => {
+    const node = buildConditionBuilderNode({ id: "node_condition", x: 300, y: 160 });
+
+    expect(node.data.nodeType).toBe("condition");
+    expect(node.data.config).toMatchObject({
+      default_target: "node_standard",
+      conditions: [
+        {
+          id: "urgent",
+          path: "$.run.input.priority",
+          operator: "equals",
+          value: "urgent",
+          target: "node_urgent",
+        },
+      ],
+    });
+    expect(node.data.input_mapping).toEqual({ priority: "$.run.input.priority" });
   });
 
   it("adds an executable tool node for the builder palette", () => {

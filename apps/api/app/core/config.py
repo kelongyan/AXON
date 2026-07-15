@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     app_version: str = "0.1.0"
     environment: str = "development"
     check_dependencies: bool = True
-    cors_allowed_origins: str = "http://localhost:3000"
+    cors_allowed_origins: str = "http://localhost:5180"
 
     database_url: str = "postgresql+psycopg://agentflow:agentflow@localhost:5432/agentflow"
     redis_url: str = "redis://localhost:6379/0"

@@ -252,7 +252,9 @@ def search_knowledge_bases(
 
     scored: list[tuple[float, DocumentChunk, Document]] = []
     for chunk, document in session.execute(query_stmt):
-        score = cosine_similarity(query_vector, [float(value) for value in chunk.embedding])
+        vector_score = cosine_similarity(query_vector, [float(value) for value in chunk.embedding])
+        lexical_score = lexical_overlap_score(query, f"{document.filename}\n{chunk.content}")
+        score = hybrid_retrieval_score(vector_score=vector_score, lexical_score=lexical_score)
         if score > 0:
             scored.append((score, chunk, document))
 
@@ -465,6 +467,28 @@ def cosine_similarity(left: list[float], right: list[float]) -> float:
     if left_norm == 0 or right_norm == 0:
         return 0.0
     return dot / (left_norm * right_norm)
+
+
+def hybrid_retrieval_score(*, vector_score: float, lexical_score: float) -> float:
+    if vector_score <= 0:
+        return lexical_score
+    if lexical_score <= 0:
+        return vector_score
+    return (vector_score * 0.8) + (lexical_score * 0.2)
+
+
+def lexical_overlap_score(query: str, content: str) -> float:
+    query_terms = _search_terms(query)
+    if not query_terms:
+        return 0.0
+    content_terms = _search_terms(content)
+    if not content_terms:
+        return 0.0
+    return len(query_terms & content_terms) / len(query_terms)
+
+
+def _search_terms(value: str) -> set[str]:
+    return {term for term in re.findall(r"[A-Za-z0-9\u4e00-\u9fff]+", value.lower()) if len(term) > 1}
 
 
 def _embed_texts(embedding_client: object, *, texts: list[str], model: str) -> list[list[float]]:

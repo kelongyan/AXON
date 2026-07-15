@@ -21,7 +21,14 @@ from .errors import (
     WorkflowValidationError,
 )
 from .events import _log_llm_call, _trace_event
-from .graph import _coerce_uuid, _coerce_uuid_list, _node_config, execution_sequence
+from .graph import (
+    _coerce_uuid,
+    _coerce_uuid_list,
+    _node_config,
+    _nodes_by_id,
+    _outgoing_targets_by_source,
+    execution_sequence,
+)
 from .repository import _get_approval, _get_run
 from .responses import run_response
 from .utils import _elapsed_ms, _jsonish, _now
@@ -86,9 +93,11 @@ def execute_claimed_run(
     if version is None:
         raise RunExecutionError("Workflow version not found")
     start_index = 0
+    start_node_id: str | None = None
     if run.current_node_id:
-        sequence = execution_sequence(version.graph)
-        node_index = _node_index(sequence, run.current_node_id)
+        nodes_by_id = _nodes_by_id(version.graph)
+        if run.current_node_id not in nodes_by_id:
+            raise RunExecutionError("Current node not found in workflow graph")
         step = _latest_run_step(session, run_id=run.id, node_id=run.current_node_id)
         if step is not None and step.node_type == "tool" and step.status == "waiting_approval":
             approval = _approved_approval_for_node(session, run=run, node_id=run.current_node_id)
@@ -103,7 +112,20 @@ def execute_claimed_run(
                 clear_claim=True,
                 expected_claim_token=claim_token,
             )
-        start_index = node_index + 1 if step is not None and step.status == "succeeded" else node_index
+        if step is not None and step.status == "succeeded":
+            context = _run_context(run)
+            step_output = _step_output_from_context(context, run.current_node_id, step)
+            start_node_id = _next_node_id(version.graph, nodes_by_id[run.current_node_id], step_output)
+            if start_node_id is None:
+                _mark_run_succeeded(
+                    session,
+                    workspace_id=workspace_id,
+                    run=run,
+                    context=context,
+                    output=step_output if isinstance(step_output, dict) else None,
+                )
+        else:
+            start_node_id = run.current_node_id
     return _execute_running_run(
         session,
         workspace_id=workspace_id,
@@ -112,6 +134,7 @@ def execute_claimed_run(
         llm_client=llm_client,
         embedding_client=embedding_client,
         start_index=start_index,
+        start_node_id=start_node_id,
         clear_claim=True,
         expected_claim_token=claim_token,
     )
@@ -126,19 +149,31 @@ def _execute_running_run(
     llm_client: object,
     embedding_client: object | None,
     start_index: int = 0,
+    start_node_id: str | None = None,
     clear_claim: bool = False,
     expected_claim_token: str | None = None,
 ) -> RunResponse:
     try:
-        _execute_run_from_index(
-            session,
-            workspace_id=workspace_id,
-            run=run,
-            version=version,
-            llm_client=llm_client,
-            embedding_client=embedding_client,
-            start_index=start_index,
-        )
+        if start_node_id is not None and run.status not in TERMINAL_RUN_STATUSES:
+            _execute_run_from_node(
+                session,
+                workspace_id=workspace_id,
+                run=run,
+                version=version,
+                llm_client=llm_client,
+                embedding_client=embedding_client,
+                start_node_id=start_node_id,
+            )
+        elif run.status not in TERMINAL_RUN_STATUSES:
+            _execute_run_from_index(
+                session,
+                workspace_id=workspace_id,
+                run=run,
+                version=version,
+                llm_client=llm_client,
+                embedding_client=embedding_client,
+                start_index=start_index,
+            )
     except RunWaitingForApproval:
         pass
     except Exception as exc:
@@ -467,9 +502,10 @@ def _resume_tool_node_after_approval(
     version = session.get(WorkflowVersion, run.workflow_version_id)
     if version is None:
         raise RunExecutionError("Workflow version not found")
-    sequence = execution_sequence(version.graph)
-    node_index = _node_index(sequence, approval.node_id)
-    node = sequence[node_index]
+    nodes_by_id = _nodes_by_id(version.graph)
+    if approval.node_id not in nodes_by_id:
+        raise RunExecutionError("Approval node not found in workflow graph")
+    node = nodes_by_id[approval.node_id]
     context = _run_context(run)
 
     try:
@@ -498,15 +534,25 @@ def _resume_tool_node_after_approval(
             payload={"node_id": step.node_id, "node_type": step.node_type},
         )
         session.flush()
-        _execute_run_from_index(
-            session,
-            workspace_id=workspace_id,
-            run=run,
-            version=version,
-            llm_client=llm_client,
-            embedding_client=embedding_client,
-            start_index=node_index + 1,
-        )
+        next_node_id = _next_node_id(version.graph, node, output)
+        if next_node_id is None:
+            _mark_run_succeeded(
+                session,
+                workspace_id=workspace_id,
+                run=run,
+                context=context,
+                output=output if isinstance(output, dict) else None,
+            )
+        else:
+            _execute_run_from_node(
+                session,
+                workspace_id=workspace_id,
+                run=run,
+                version=version,
+                llm_client=llm_client,
+                embedding_client=embedding_client,
+                start_node_id=next_node_id,
+            )
     except RunWaitingForApproval:
         pass
     except Exception as exc:
@@ -603,37 +649,100 @@ def _execute_run_from_index(
     embedding_client: object | None,
     start_index: int,
 ) -> None:
-    context = _run_context(run)
     sequence = execution_sequence(version.graph)
+    if start_index >= len(sequence):
+        _mark_run_succeeded(
+            session,
+            workspace_id=workspace_id,
+            run=run,
+            context=_run_context(run),
+            output=run.output,
+        )
+        return
+    _execute_run_from_node(
+        session,
+        workspace_id=workspace_id,
+        run=run,
+        version=version,
+        llm_client=llm_client,
+        embedding_client=embedding_client,
+        start_node_id=str(sequence[start_index]["id"]),
+    )
+
+
+def _execute_run_from_node(
+    session: Session,
+    *,
+    workspace_id: UUID,
+    run: Run,
+    version: WorkflowVersion,
+    llm_client: object,
+    embedding_client: object | None,
+    start_node_id: str,
+) -> None:
+    context = _run_context(run)
+    nodes_by_id = _nodes_by_id(version.graph)
+    current_node_id: str | None = start_node_id
+    visited: set[str] = set()
     try:
-        for node in sequence[start_index:]:
+        while current_node_id is not None:
+            if current_node_id in visited:
+                raise WorkflowValidationError("Workflow graph cannot contain cycles")
+            if current_node_id not in nodes_by_id:
+                raise WorkflowValidationError("Workflow graph references an unknown node")
+            visited.add(current_node_id)
+
+            node = nodes_by_id[current_node_id]
             step_output = _execute_node(
                 session,
                 workspace_id=workspace_id,
                 run=run,
+                graph=version.graph,
                 node=node,
                 context=context,
                 llm_client=llm_client,
                 embedding_client=embedding_client,
             )
             context["steps"][str(node["id"])] = {"output": step_output}
+            context.setdefault("execution_path", []).append(str(node["id"]))
             run.state = context
-        run.status = "succeeded"
-        run.output = _find_end_output(context, version.graph)
-        run.state = context
-        run.finished_at = _now()
-        _trace_event(
-            session,
-            workspace_id=workspace_id,
-            run=run,
-            event_type="run.succeeded",
-            actor_type="worker",
-            message="Run succeeded",
-            payload={"output_summary": redact_mapping(run.output or {})},
-        )
+            if node.get("type") == "end":
+                _mark_run_succeeded(
+                    session,
+                    workspace_id=workspace_id,
+                    run=run,
+                    context=context,
+                    output=step_output if isinstance(step_output, dict) else None,
+                )
+                return
+            current_node_id = _next_node_id(version.graph, node, step_output)
+        raise WorkflowValidationError("Workflow execution path did not reach an end node")
     except RunWaitingForApproval:
         run.state = context
         raise
+
+
+def _mark_run_succeeded(
+    session: Session,
+    *,
+    workspace_id: UUID,
+    run: Run,
+    context: dict[str, Any],
+    output: dict[str, Any] | None,
+) -> None:
+    run.status = "succeeded"
+    run.output = output
+    run.state = context
+    run.finished_at = _now()
+    _trace_event(
+        session,
+        workspace_id=workspace_id,
+        run=run,
+        event_type="run.succeeded",
+        actor_type="worker",
+        message="Run succeeded",
+        payload={"output_summary": redact_mapping(run.output or {})},
+    )
 
 
 def _run_context(run: Run) -> dict[str, Any]:
@@ -649,13 +758,6 @@ def _run_context(run: Run) -> dict[str, Any]:
         "run": {"input": run.input, "metadata": metadata},
         "steps": steps,
     }
-
-
-def _node_index(sequence: list[dict[str, Any]], node_id: str) -> int:
-    for index, node in enumerate(sequence):
-        if node.get("id") == node_id:
-            return index
-    raise RunExecutionError("Approval node not found in workflow graph")
 
 
 def _latest_run_step(session: Session, *, run_id: UUID, node_id: str) -> RunStep | None:
@@ -683,6 +785,31 @@ def _approved_approval_for_node(session: Session, *, run: Run, node_id: str) -> 
     return approval
 
 
+def _step_output_from_context(context: dict[str, Any], node_id: str, step: RunStep) -> Any:
+    stored_step = context.get("steps", {}).get(node_id)
+    if isinstance(stored_step, dict) and "output" in stored_step:
+        return stored_step["output"]
+    return step.output or {}
+
+
+def _next_node_id(graph: dict[str, Any], node: dict[str, Any], output: dict[str, Any]) -> str | None:
+    node_id = str(node["id"])
+    if node.get("type") == "end":
+        return None
+
+    targets = _outgoing_targets_by_source(graph).get(node_id, [])
+    if node.get("type") == "condition":
+        selected_target = output.get("selected_target")
+        if not isinstance(selected_target, str) or not selected_target:
+            raise WorkflowValidationError("Condition node did not select a target")
+        if selected_target not in targets:
+            raise WorkflowValidationError("Condition selected target is not connected by an outgoing edge")
+        return selected_target
+
+    if len(targets) != 1:
+        raise WorkflowValidationError("Workflow node must have exactly one outgoing edge")
+    return targets[0]
+
 
 
 def _execute_node(
@@ -690,6 +817,7 @@ def _execute_node(
     *,
     workspace_id: UUID,
     run: Run,
+    graph: dict[str, Any],
     node: dict[str, Any],
     context: dict[str, Any],
     llm_client: object,
@@ -759,6 +887,30 @@ def _execute_node(
                 node=node,
                 node_input=step_input,
             )
+        elif node["type"] == "condition":
+            step_input = resolve_mapping(node.get("input_mapping", {}), context)
+            step.input = step_input
+            output = _execute_condition_node(
+                graph=graph,
+                node=node,
+                node_input=step_input,
+                context=context,
+            )
+            _trace_event(
+                session,
+                workspace_id=workspace_id,
+                run=run,
+                step=step,
+                event_type="condition.selected",
+                actor_type="worker",
+                message=f"Condition selected: {step.node_name}",
+                payload={
+                    "node_id": step.node_id,
+                    "selected_target": output["selected_target"],
+                    "matched": output["matched"],
+                    "condition_id": output.get("condition_id"),
+                },
+            )
         elif node["type"] == "approval":
             step_input = resolve_mapping(node.get("input_mapping", {}), context)
             step.input = step_input
@@ -816,6 +968,112 @@ def _execute_node(
         )
         session.flush()
         raise
+
+
+def _execute_condition_node(
+    *,
+    graph: dict[str, Any],
+    node: dict[str, Any],
+    node_input: dict[str, Any],
+    context: dict[str, Any],
+) -> dict[str, Any]:
+    config = _node_config(node)
+    conditions = config.get("conditions", [])
+    if not isinstance(conditions, list):
+        raise WorkflowValidationError("Condition node conditions must be an array")
+
+    condition_context = {**context, "input": node_input}
+    for index, condition in enumerate(conditions):
+        if not isinstance(condition, dict):
+            raise WorkflowValidationError("Condition entries must be objects")
+        if _condition_matches(condition, condition_context):
+            return {
+                "matched": True,
+                "condition_id": str(condition.get("id") or index + 1),
+                "condition_label": str(condition.get("label") or ""),
+                "selected_target": str(condition.get("target")),
+            }
+
+    default_target = config.get("default_target") or _default_edge_target(graph, str(node["id"]))
+    if isinstance(default_target, str) and default_target:
+        return {
+            "matched": False,
+            "condition_id": None,
+            "condition_label": "",
+            "selected_target": default_target,
+        }
+    raise WorkflowValidationError("Condition node did not match and no default target is configured")
+
+
+def _condition_matches(condition: dict[str, Any], context: dict[str, Any]) -> bool:
+    path = condition.get("path") or condition.get("left")
+    if not isinstance(path, str) or not path.startswith("$."):
+        raise WorkflowValidationError("Condition entries require a JSON path")
+    actual = _resolve_path(path, context)
+    operator = str(condition.get("operator") or "equals")
+    expected = condition.get("value")
+
+    if operator == "equals":
+        return actual == expected
+    if operator == "not_equals":
+        return actual != expected
+    if operator == "exists":
+        return actual is not None
+    if operator == "not_exists":
+        return actual is None
+    if operator == "contains":
+        return _contains(actual, expected)
+    if operator == "greater_than":
+        return _compare_numbers(actual, expected, ">")
+    if operator == "greater_than_or_equal":
+        return _compare_numbers(actual, expected, ">=")
+    if operator == "less_than":
+        return _compare_numbers(actual, expected, "<")
+    if operator == "less_than_or_equal":
+        return _compare_numbers(actual, expected, "<=")
+    if operator == "in":
+        return isinstance(expected, list) and actual in expected
+    if operator == "not_in":
+        return isinstance(expected, list) and actual not in expected
+    raise WorkflowValidationError(f"Condition operator is not supported: {operator}")
+
+
+def _default_edge_target(graph: dict[str, Any], node_id: str) -> str | None:
+    edges = graph.get("edges", [])
+    if not isinstance(edges, list):
+        return None
+    targets = [
+        edge.get("target")
+        for edge in edges
+        if isinstance(edge, dict) and edge.get("source") == node_id and edge.get("type") == "default"
+    ]
+    string_targets = [target for target in targets if isinstance(target, str)]
+    return string_targets[0] if len(string_targets) == 1 else None
+
+
+def _contains(actual: Any, expected: Any) -> bool:
+    if isinstance(actual, str):
+        return str(expected) in actual
+    if isinstance(actual, list):
+        return expected in actual
+    if isinstance(actual, dict):
+        return expected in actual
+    return False
+
+
+def _compare_numbers(actual: Any, expected: Any, operator: str) -> bool:
+    try:
+        left = float(actual)
+        right = float(expected)
+    except (TypeError, ValueError):
+        return False
+    if operator == ">":
+        return left > right
+    if operator == ">=":
+        return left >= right
+    if operator == "<":
+        return left < right
+    return left <= right
 
 
 def _execute_agent_node(
@@ -1222,13 +1480,5 @@ def _resolve_path(path: str, context: dict[str, Any]) -> Any:
         else:
             return None
     return current
-
-
-def _find_end_output(context: dict[str, Any], graph: dict[str, Any]) -> dict[str, Any] | None:
-    for node in execution_sequence(graph):
-        if node.get("type") == "end":
-            output = context.get("steps", {}).get(str(node["id"]), {}).get("output")
-            return output if isinstance(output, dict) else None
-    return None
 
 

@@ -29,6 +29,5 @@ class RunWaitingForApproval(RuntimeError):
     pass
 
 
-EXECUTABLE_PHASE6_NODE_TYPES: Final = {"start", "retrieval", "agent", "tool", "approval", "end"}
-PLANNED_VISUAL_NODE_TYPES: Final = {"condition"}
+EXECUTABLE_PHASE6_NODE_TYPES: Final = {"start", "retrieval", "agent", "tool", "condition", "approval", "end"}
 TERMINAL_RUN_STATUSES: Final = {"succeeded", "failed", "cancelled"}

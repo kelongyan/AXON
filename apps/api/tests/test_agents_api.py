@@ -162,13 +162,13 @@ def test_api_allows_web_console_cors_preflight():
     response = client.options(
         "/me",
         headers={
-            "Origin": "http://localhost:3000",
+            "Origin": "http://localhost:5180",
             "Access-Control-Request-Method": "GET",
         },
     )
 
     assert response.status_code == 200
-    assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
+    assert response.headers["access-control-allow-origin"] == "http://localhost:5180"
 
 
 def test_agent_lifecycle_creates_versions_clones_disables_and_logs_llm_call():

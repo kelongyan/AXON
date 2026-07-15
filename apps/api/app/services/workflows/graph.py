@@ -7,11 +7,21 @@ from sqlalchemy.orm import Session
 from app.db.models import Agent, AgentVersion, Tool
 from app.services import knowledge_bases
 
-from .errors import (
-    EXECUTABLE_PHASE6_NODE_TYPES,
-    PLANNED_VISUAL_NODE_TYPES,
-    WorkflowValidationError,
-)
+from .errors import EXECUTABLE_PHASE6_NODE_TYPES, WorkflowValidationError
+
+SUPPORTED_CONDITION_OPERATORS = {
+    "equals",
+    "not_equals",
+    "contains",
+    "exists",
+    "not_exists",
+    "greater_than",
+    "greater_than_or_equal",
+    "less_than",
+    "less_than_or_equal",
+    "in",
+    "not_in",
+}
 
 
 def validate_phase3_graph(
@@ -45,8 +55,6 @@ def validate_phase3_graph(
         if not isinstance(node, dict):
             raise WorkflowValidationError("Each node must be an object")
         node_type = node.get("type")
-        if node_type in PLANNED_VISUAL_NODE_TYPES:
-            raise WorkflowValidationError(f"Node type is planned but not executable in Phase 6 MVP: {node_type}")
         if node_type not in EXECUTABLE_PHASE6_NODE_TYPES:
             raise WorkflowValidationError(f"Node type is not supported in Phase 6 MVP: {node_type}")
         if not isinstance(node.get("name"), str) or not node["name"]:
@@ -65,17 +73,25 @@ def validate_phase3_graph(
         raise WorkflowValidationError("Edge ids must be unique")
 
     valid_node_ids = set(node_ids)
+    outgoing_targets = _outgoing_targets_by_source(graph)
     for edge in edges:
         if not isinstance(edge, dict):
             raise WorkflowValidationError("Each edge must be an object")
         if edge.get("source") not in valid_node_ids or edge.get("target") not in valid_node_ids:
             raise WorkflowValidationError("Every edge source and target must reference existing nodes")
+    for node in nodes:
+        if isinstance(node, dict) and node.get("type") == "condition":
+            _validate_condition_node(
+                node,
+                valid_node_ids=valid_node_ids,
+                outgoing_targets=outgoing_targets.get(str(node["id"]), []),
+            )
 
     sequence = execution_sequence(graph)
-    if sequence[0].get("type") != "start" or sequence[-1].get("type") != "end":
+    if sequence[0].get("type") != "start":
         raise WorkflowValidationError("Phase 6 MVP graph must execute from start to end")
     if len(sequence) != len(nodes):
-        raise WorkflowValidationError("Phase 6 MVP graph must be a single reachable sequential path")
+        raise WorkflowValidationError("Phase 6 MVP graph must be fully reachable from the start node")
 
     referenced_agent_versions: list[str] = []
     referenced_tool_versions: list[dict[str, Any]] = []
@@ -109,6 +125,22 @@ def validate_phase3_graph(
                 node_snapshots[str(node["id"])] = {
                     "title": str(config.get("title") or node["name"]),
                     "risk_level": str(config.get("risk_level") or "medium"),
+                }
+            elif node.get("type") == "condition":
+                config = _node_config(node)
+                conditions = config.get("conditions")
+                node_snapshots[str(node["id"])] = {
+                    "conditions": [
+                        {
+                            "id": str(condition.get("id") or index + 1),
+                            "path": str(condition.get("path") or condition.get("left")),
+                            "operator": str(condition.get("operator") or "equals"),
+                            "target": str(condition.get("target")),
+                        }
+                        for index, condition in enumerate(conditions if isinstance(conditions, list) else [])
+                        if isinstance(condition, dict)
+                    ],
+                    "default_target": str(config.get("default_target") or ""),
                 }
             elif node.get("type") == "tool":
                 config = _node_config(node)
@@ -166,6 +198,43 @@ def validate_phase3_graph(
 
 def execution_sequence(graph: dict[str, Any]) -> list[dict[str, Any]]:
     nodes_by_id = _nodes_by_id(graph)
+    outgoing = _outgoing_targets_by_source(graph)
+
+    sequence: list[dict[str, Any]] = []
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(node_id: str) -> None:
+        if node_id in visiting:
+            raise WorkflowValidationError("Phase 6 MVP graph cannot contain cycles")
+        if node_id in visited:
+            return
+        if node_id not in nodes_by_id:
+            raise WorkflowValidationError("Every edge target must reference an existing node")
+
+        visiting.add(node_id)
+        node = nodes_by_id[node_id]
+        sequence.append(node)
+        if node.get("type") == "end":
+            if outgoing.get(node_id):
+                raise WorkflowValidationError("End nodes cannot have outgoing edges")
+        else:
+            targets = outgoing.get(node_id, [])
+            if node.get("type") == "condition":
+                if not targets:
+                    raise WorkflowValidationError("Condition nodes must have at least one outgoing edge")
+            elif len(targets) != 1:
+                raise WorkflowValidationError("Phase 6 MVP nodes must have exactly one default outgoing edge")
+            for target in targets:
+                visit(target)
+        visiting.remove(node_id)
+        visited.add(node_id)
+
+    visit(_start_node_id(graph))
+    return sequence
+
+
+def _outgoing_targets_by_source(graph: dict[str, Any]) -> dict[str, list[str]]:
     edges = graph.get("edges", [])
     if not isinstance(edges, list):
         raise WorkflowValidationError("Graph edges must be an array")
@@ -177,24 +246,47 @@ def execution_sequence(graph: dict[str, Any]) -> list[dict[str, Any]]:
         target = edge.get("target")
         if isinstance(source, str) and isinstance(target, str):
             outgoing.setdefault(source, []).append(target)
+    return outgoing
 
-    current = _start_node_id(graph)
-    visited: set[str] = set()
-    sequence: list[dict[str, Any]] = []
-    while True:
-        if current in visited:
-            raise WorkflowValidationError("Phase 6 MVP graph cannot contain cycles")
-        visited.add(current)
-        node = nodes_by_id[current]
-        sequence.append(node)
-        if node.get("type") == "end":
-            return sequence
-        targets = outgoing.get(current, [])
-        if len(targets) != 1:
-            raise WorkflowValidationError("Phase 6 MVP nodes must have exactly one default outgoing edge")
-        current = targets[0]
-        if current not in nodes_by_id:
-            raise WorkflowValidationError("Every edge target must reference an existing node")
+
+def _validate_condition_node(
+    node: dict[str, Any],
+    *,
+    valid_node_ids: set[str],
+    outgoing_targets: list[str],
+) -> None:
+    config = _node_config(node)
+    conditions = config.get("conditions", [])
+    default_target = config.get("default_target")
+    outgoing_target_set = set(outgoing_targets)
+
+    if not isinstance(conditions, list):
+        raise WorkflowValidationError("Condition node conditions must be an array")
+    if not conditions and not default_target:
+        raise WorkflowValidationError("Condition node requires conditions or default_target")
+    if default_target is not None:
+        _validate_condition_target(default_target, valid_node_ids, outgoing_target_set)
+    for condition in conditions:
+        if not isinstance(condition, dict):
+            raise WorkflowValidationError("Condition entries must be objects")
+        path = condition.get("path") or condition.get("left")
+        if not isinstance(path, str) or not path.startswith("$."):
+            raise WorkflowValidationError("Condition entries require a JSON path")
+        operator = str(condition.get("operator") or "equals")
+        if operator not in SUPPORTED_CONDITION_OPERATORS:
+            raise WorkflowValidationError(f"Condition operator is not supported: {operator}")
+        if operator in {"in", "not_in"} and not isinstance(condition.get("value"), list):
+            raise WorkflowValidationError("Condition in/not_in operators require an array value")
+        _validate_condition_target(condition.get("target"), valid_node_ids, outgoing_target_set)
+
+
+def _validate_condition_target(value: object, valid_node_ids: set[str], outgoing_targets: set[str]) -> None:
+    if not isinstance(value, str) or not value:
+        raise WorkflowValidationError("Condition target must reference a node")
+    if value not in valid_node_ids:
+        raise WorkflowValidationError("Condition target must reference an existing node")
+    if value not in outgoing_targets:
+        raise WorkflowValidationError("Condition target must match an outgoing edge")
 
 
 

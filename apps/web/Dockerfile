@@ -2,6 +2,9 @@ FROM node:22-alpine AS builder
 
 WORKDIR /app
 
+ARG NEXT_PUBLIC_API_BASE_URL=/api/agentflow
+ENV NEXT_PUBLIC_API_BASE_URL=$NEXT_PUBLIC_API_BASE_URL
+
 COPY package.json package-lock.json ./
 RUN npm ci
 

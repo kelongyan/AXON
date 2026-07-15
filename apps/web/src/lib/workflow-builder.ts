@@ -200,6 +200,34 @@ export function buildApprovalBuilderNode({ id, x, y }: { id: string; x: number; 
   };
 }
 
+export function buildConditionBuilderNode({ id, x, y }: { id: string; x: number; y: number }): BuilderNode {
+  return {
+    id,
+    type: "workflowNode",
+    position: { x, y },
+    data: {
+      label: "Priority Branch",
+      nodeType: "condition",
+      config: {
+        conditions: [
+          {
+            id: "urgent",
+            label: "Urgent",
+            path: "$.run.input.priority",
+            operator: "equals",
+            value: "urgent",
+            target: "node_urgent",
+          },
+        ],
+        default_target: "node_standard",
+      },
+      input_mapping: {
+        priority: "$.run.input.priority",
+      },
+    },
+  };
+}
+
 export function buildEndBuilderNode({ id, x, y }: { id: string; x: number; y: number }): BuilderNode {
   return {
     id,

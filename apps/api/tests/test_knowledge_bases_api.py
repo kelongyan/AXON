@@ -151,6 +151,34 @@ def test_knowledge_base_document_processing_and_retrieval_returns_source_metadat
     assert top_result["score"] > 0
 
 
+def test_retrieval_falls_back_to_keyword_overlap_when_vectors_are_zero():
+    fake_embedding = BagOfWordsEmbeddingClient()
+    fake_store = MemoryObjectStore()
+    client = create_test_client(fake_embedding=fake_embedding, fake_store=fake_store)
+    kb_id = client.post(
+        "/knowledge-bases",
+        json={"name": "Keyword Recall", "embedding_model": "test-embedding"},
+    ).json()["id"]
+    client.post(
+        f"/knowledge-bases/{kb_id}/documents",
+        json={
+            "filename": "retention-policy.txt",
+            "content_type": "text/plain",
+            "content": "Retention escalation rules require legal review before permanent deletion.",
+        },
+    )
+
+    response = client.post(
+        f"/knowledge-bases/{kb_id}/retrieve",
+        json={"query": "retention escalation", "top_k": 1},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["results"][0]["source"]["filename"] == "retention-policy.txt"
+    assert body["results"][0]["score"] > 0
+
+
 def test_workflow_retrieval_node_injects_untrusted_context_and_returns_citations():
     fake_embedding = BagOfWordsEmbeddingClient()
     fake_store = MemoryObjectStore()

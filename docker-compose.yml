@@ -76,14 +76,24 @@ services:
       AGENTFLOW_EMBEDDING_API_KEY: ${AGENTFLOW_EMBEDDING_API_KEY:-}
       AGENTFLOW_EMBEDDING_MODEL: ${AGENTFLOW_EMBEDDING_MODEL:-text-embedding-3-small}
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
       minio-init:
         condition: service_completed_successfully
     ports:
       - "8000:8000"
+
+  migrate:
+    build:
+      context: ./apps/api
+    command: ["python", "-m", "alembic", "upgrade", "head"]
+    environment:
+      AGENTFLOW_DATABASE_URL: postgresql+psycopg://agentflow:agentflow@postgres:5432/agentflow
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   worker:
     build:
@@ -111,8 +121,8 @@ services:
       AGENTFLOW_EMBEDDING_API_KEY: ${AGENTFLOW_EMBEDDING_API_KEY:-}
       AGENTFLOW_EMBEDDING_MODEL: ${AGENTFLOW_EMBEDDING_MODEL:-text-embedding-3-small}
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
       minio-init:
@@ -121,13 +131,15 @@ services:
   web:
     build:
       context: ./apps/web
+      args:
+        NEXT_PUBLIC_API_BASE_URL: /api/agentflow
     environment:
-      NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
-      NEXT_PUBLIC_AGENTFLOW_API_KEY: ${AGENTFLOW_API_AUTH_KEY:-}
-      NEXT_PUBLIC_AGENTFLOW_WORKSPACE_SLUG: ${NEXT_PUBLIC_AGENTFLOW_WORKSPACE_SLUG:-}
-      NEXT_PUBLIC_AGENTFLOW_WORKSPACE_NAME: ${NEXT_PUBLIC_AGENTFLOW_WORKSPACE_NAME:-}
-      NEXT_PUBLIC_AGENTFLOW_USER_EMAIL: ${NEXT_PUBLIC_AGENTFLOW_USER_EMAIL:-}
-      NEXT_PUBLIC_AGENTFLOW_USER_NAME: ${NEXT_PUBLIC_AGENTFLOW_USER_NAME:-}
+      AGENTFLOW_API_BASE_URL: http://api:8000
+      AGENTFLOW_API_AUTH_KEY: ${AGENTFLOW_API_AUTH_KEY:-}
+      AGENTFLOW_CONSOLE_WORKSPACE_SLUG: ${AGENTFLOW_CONSOLE_WORKSPACE_SLUG:-}
+      AGENTFLOW_CONSOLE_WORKSPACE_NAME: ${AGENTFLOW_CONSOLE_WORKSPACE_NAME:-}
+      AGENTFLOW_CONSOLE_USER_EMAIL: ${AGENTFLOW_CONSOLE_USER_EMAIL:-}
+      AGENTFLOW_CONSOLE_USER_NAME: ${AGENTFLOW_CONSOLE_USER_NAME:-}
     depends_on:
       - api
     ports:

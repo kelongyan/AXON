@@ -121,6 +121,33 @@ def test_running_evaluation_keeps_going_when_one_case_fails():
     assert body["results"][1]["error_message"]
 
 
+def test_running_evaluation_marks_quality_failures_from_expected_checks():
+    fake_llm = SequencedLLMClient(outputs=["AgentFlow answer", "Unexpected answer"])
+    client = create_test_client(fake_llm)
+    workflow_id = create_published_workflow(client)
+    evaluation = client.post(
+        "/evaluations",
+        json={
+            "name": "Quality Eval",
+            "workflow_id": workflow_id,
+            "cases": [
+                {"name": "Case A", "input": {"topic": "AgentFlow"}, "expected": {"contains": "AgentFlow"}},
+                {"name": "Case B", "input": {"topic": "Approval"}, "expected": {"contains": "Approval"}},
+            ],
+        },
+    ).json()
+
+    response = client.post(f"/evaluations/{evaluation['id']}/run")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["summary"]["success_count"] == 1
+    assert body["summary"]["failure_count"] == 1
+    assert body["summary"]["quality_score_average"] == 0.5
+    assert [result["status"] for result in body["results"]] == ["succeeded", "failed"]
+    assert "missing expected text" in body["results"][1]["error_message"]
+
+
 def test_rerunning_evaluation_replaces_previous_results_for_current_summary():
     fake_llm = SequencedLLMClient(outputs=["AgentFlow answer", "Approval answer", "Second AgentFlow", "Second Approval"])
     client = create_test_client(fake_llm)

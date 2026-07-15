@@ -1,3 +1,4 @@
+import json
 from time import perf_counter
 from typing import Any
 from uuid import UUID
@@ -126,8 +127,11 @@ def run_evaluation(
                 embedding_client=embedding_client,
             )
             output = executed.output
-            status = "succeeded" if executed.status == "succeeded" else "failed"
+            quality = evaluate_expected_output(case.expected, output)
+            status = "succeeded" if executed.status == "succeeded" and quality["passed"] else "failed"
             error_message = executed.error_message
+            if executed.status == "succeeded" and not quality["passed"]:
+                error_message = quality["message"]
             token_row = session.execute(
                 select(
                     sa.func.coalesce(sa.func.sum(LLMCall.prompt_tokens), 0),
@@ -242,4 +246,80 @@ def _summary_for_evaluation(session: Session, *, evaluation: Evaluation, case_co
         "average_latency_ms": round(total_latency / len(results)) if results else 0,
         "total_tokens": total_tokens,
         "estimated_cost": round((total_tokens / 1000) * token_price_float, 8),
+        "quality_pass_count": success_count,
+        "quality_fail_count": failure_count,
+        "quality_score_average": round(success_count / case_count, 4) if case_count else 0.0,
     }
+
+
+def evaluate_expected_output(expected: dict[str, Any], output: dict[str, Any] | None) -> dict[str, Any]:
+    if not expected:
+        return {"passed": True, "score": 1.0, "message": ""}
+    output_text = _json_text(output)
+    checks: list[tuple[bool, str]] = []
+
+    if "contains" in expected:
+        required = _string_list(expected["contains"])
+        missing = [value for value in required if value.lower() not in output_text.lower()]
+        checks.append((not missing, f"missing expected text: {', '.join(missing)}"))
+    if "not_contains" in expected:
+        forbidden = _string_list(expected["not_contains"])
+        present = [value for value in forbidden if value.lower() in output_text.lower()]
+        checks.append((not present, f"found forbidden text: {', '.join(present)}"))
+    if "equals" in expected:
+        checks.append((output == expected["equals"], "output did not equal expected value"))
+    if "json_path_equals" in expected:
+        path_checks = expected["json_path_equals"]
+        if isinstance(path_checks, dict):
+            mismatches = [
+                path
+                for path, value in path_checks.items()
+                if not isinstance(path, str) or _resolve_path(path, output or {}) != value
+            ]
+            checks.append((not mismatches, f"json path mismatch: {', '.join(mismatches)}"))
+        else:
+            checks.append((False, "json_path_equals must be an object"))
+    if "required_citations" in expected:
+        required_count = _coerce_int(expected["required_citations"])
+        citations = output.get("citations") if isinstance(output, dict) else None
+        actual_count = len(citations) if isinstance(citations, list) else 0
+        checks.append((actual_count >= required_count, f"expected at least {required_count} citations"))
+
+    if not checks:
+        return {"passed": True, "score": 1.0, "message": ""}
+    passed_count = sum(1 for passed, _ in checks if passed)
+    failed_messages = [message for passed, message in checks if not passed]
+    return {
+        "passed": not failed_messages,
+        "score": round(passed_count / len(checks), 4),
+        "message": "; ".join(failed_messages),
+    }
+
+
+def _json_text(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True)
+
+
+def _string_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    return [str(value)]
+
+
+def _coerce_int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _resolve_path(path: str, value: Any) -> Any:
+    if not path.startswith("$."):
+        return None
+    current = value
+    for part in path[2:].split("."):
+        if isinstance(current, dict) and part in current:
+            current = current[part]
+        else:
+            return None
+    return current
